@@ -1,0 +1,722 @@
+#+title: burnscars: Rust port of the controlledburn core — design
+
+* Summary
+
+~burnscars~ is a minimal, idiomatic Rust port of the controlledburn core
+(~~/repos/controlledburn/cpp~). It rasterizes polygons, lines and points onto a
+regular grid. It gives sparse output, in O(perimeter) time and memory. It has two
+polygon paths:
+
+- *Coverage*: the exact fraction of each boundary cell that the polygon covers.
+- *Approx*: the cell-centre rule (the GDAL and fasterize rule).
+
+The crate has no internal parallelism. Its API lets an external orchestrator (for
+example brix) run work in parallel, by geometry or by grid chunk. The design leaves
+room for a later per-cell DE-9IM estimate (see [[*Future: DE-9IM][Future: DE-9IM]]).
+
+* Sources and rules
+
+** Upstream pins
+
+| Source        | Path                         | Commit    | Licence    | Role                                  |
+|---------------+------------------------------+-----------+------------+---------------------------------------|
+| controlledburn | ~~/repos/controlledburn~     | ~1f8a25f~ | Apache-2.0 | The code to port                      |
+| exactextract  | ~~/repos/exactextract~       | ~67969d9~ | Apache-2.0 | Reference for all geometry algorithms |
+
+The controlledburn core is in ~cpp/src/scanline.cpp~ (the engine), ~cpp/src/wkb.cpp~
+(not ported) and ~cpp/src/ee/~ (the vendored exactextract subset). The
+exactextract originals are in ~src/~ of that repo.
+
+** Rules for all agents and subagents
+
+- *Do not look at GEOS for inspiration.* Do not read it, search it, or port from it.
+  GEOS is LGPL-2.1. Translated GEOS code is a derivative work and makes the crate LGPL.
+- Do not use JTS either, unless the user allows it.
+- For geometry algorithms, look only at exactextract.
+- Read controlledburn as the code to port.
+- If controlledburn and exactextract disagree, exactextract wins. The oracle suite
+  decides.
+- GEOS is allowed only as a black-box test oracle (shapely in ~oracle/~), never as
+  source.
+- Each subagent prompt must contain these rules. The repo ~CLAUDE.md~ contains them too.
+
+** Licence
+
+The crate is Apache-2.0. A ~NOTICE~ file gives attribution to exactextract
+(ISciences, LLC, 2018) and controlledburn (Michael Sumner, 2025) for the ported code.
+~deny.toml~ allows no LGPL or GPL licence, so CI fails if one enters the dependency graph.
+
+* Scope
+
+In v1:
+- Lattice and grid types, with exact sub-windows.
+- Input through ~geo-traits~ (0.3): Point, LineString, Polygon, the Multi types,
+  Rect, Triangle, Line.
+- Coverage path and approx path for polygons. Length in cell for lines. Cell
+  membership for points.
+- The four-table output in SoA form, with a per-geometry index and a row-major view.
+- Typed errors.
+- Tests, the oracle suite, benchmarks, tooling and CI.
+
+Not in v1 (the README TODO lists these items, see [[*README TODO list][README TODO list]]):
+- Materialize and pixel functions (a brix adapter will do this).
+- Crop, extract, bindings.
+- Antimeridian handling.
+- DE-9IM.
+- The optimizations R1–R4.
+- rayon or any other internal parallelism.
+
+* Terms
+
+- *Lattice*: an infinite regular grid. Column edge ~k~ is at ~x0 + k*dx~. Row edge ~k~
+  is at ~y0 - k*dy~. Row 0 is at the top.
+- *Grid*: a lattice plus a finite range of rows and columns (a window). Indices in
+  the output are global lattice indices.
+- *Run*: the interior cells ~[col_start, col_end)~ of one row that one geometry fully
+  covers.
+- *Edge*: one boundary cell of a polygon with its coverage fraction in (0, 1).
+- *Traversal*: one pass of a ring or line through one cell. It has an entry point, zero
+  or more vertices, and an exit point. Source: exactextract ~Traversal~ (~src/traversal.h~).
+- *Winding*: the signed count of ring crossings of the cell-centre line ~y_mid~ of a
+  row, taken from the left. A cell is inside if the winding is not zero.
+- *Coverage matrix*: the sparse matrix ~A[cell, geometry]~. The value is the coverage
+  fraction, and it is 1 for interior cells. See [[*Output tables][Output tables]].
+
+* Crate layout
+
+#+begin_src text
+burnscars/
+  Cargo.toml          # deps: geo-traits 0.3, thiserror 2
+                      # dev-deps: proptest, criterion, wkb, geo-types
+  CLAUDE.md  NOTICE  LICENSE  README.md
+  rustfmt.toml  clippy.toml  rust-toolchain.toml  .taplo.toml  deny.toml  Justfile
+  .github/workflows/ci.yml  .github/workflows/oracle-nightly.yml
+  src/
+    lib.rs            # crate docs + re-exports only
+    grid.rs           # Lattice, Grid, GridError
+    output.rs         # Runs, Edges, Lines, Points, GeomSpan, BurnResult, RowMajor
+    error.rs          # BurnError, GeomKind
+    burner.rs         # Burner, Mode, bbox(); dispatch by geometry kind
+    input.rs          # geo-traits -> rings/lines/points in Scratch (only generic code)
+    scratch.rs        # Scratch: reused per-worker buffers
+    geom/
+      mod.rs
+      coord.rs        # Coord (internal)
+      side.rs         # Side
+      box_.rs         # CellBox: side(), crossing(), contains(), strictly_contains()
+      crossing.rs     # Crossing
+      perimeter.rs    # perimeter_distance, perimeter_distance_ccw
+      measures.rs     # area (shoelace)
+    coverage/
+      mod.rs          # polygon coverage: accumulation + dispatch
+      walk.rs         # polyline walker
+      fraction.rs     # analytical single-traversal fraction, left_hand_area
+      sweep.rs        # winding sweep -> runs + edges
+    approx.rs         # intercept sweep (centre rule)
+    line.rs
+    point.rs
+  tests/              # invariants, regression, multipolygon, parity, oracle, partition, alloc
+  benches/burn.rs
+  fixtures/           # copied from controlledburn fixtures/ (geometries.csv, expected.csv)
+  fixtures/oracle/    # generated, committed
+  oracle/             # pyproject.toml, uv.lock, generate.py, corpus.wkt, known_diffs.toml
+#+end_src
+
+The crate name is ~burnscars~. Edition 2024. The toolchain is pinned in
+~rust-toolchain.toml~ (1.98.0, copied from brix).
+
+* Public API
+
+** Grid
+
+#+begin_src rust
+/// Infinite regular lattice. Column edge k is `x0 + k*dx`; row edge k is `y0 - k*dy`.
+/// Row 0 is at the top. Cell (r, c) is `[x0 + c*dx, x0 + (c+1)*dx] x [y0 - (r+1)*dy, y0 - r*dy]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lattice { x0: f64, y0: f64, dx: f64, dy: f64 }
+
+/// A window on a lattice. `rows` and `cols` are global lattice indices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grid { lattice: Lattice, rows: Range<u32>, cols: Range<u32> }
+
+impl Lattice {
+    /// Errors: non-finite value, `dx <= 0`, `dy <= 0`.
+    pub fn new(x0: f64, y0: f64, dx: f64, dy: f64) -> Result<Self, GridError>;
+    pub fn x_edge(&self, col: i64) -> f64;   // x0 + col as f64 * dx
+    pub fn y_edge(&self, row: i64) -> f64;   // y0 - row as f64 * dy
+}
+
+impl Grid {
+    pub fn new(lattice: Lattice, rows: Range<u32>, cols: Range<u32>) -> Result<Self, GridError>;
+    /// Same meaning as controlledburn `GridSpec`: x0 = xmin, y0 = ymax,
+    /// dx = (xmax - xmin) / ncol, dy = (ymax - ymin) / nrow, rows 0..nrow, cols 0..ncol.
+    pub fn from_extent(xmin: f64, ymin: f64, xmax: f64, ymax: f64,
+                       ncol: u32, nrow: u32) -> Result<Self, GridError>;
+    /// A sub-window on the same lattice (for example a brix chunk).
+    /// Errors if `rows` or `cols` is empty or not inside `self`.
+    pub fn window(&self, rows: Range<u32>, cols: Range<u32>) -> Result<Grid, GridError>;
+    pub fn lattice(&self) -> &Lattice;
+    pub fn rows(&self) -> Range<u32>;
+    pub fn cols(&self) -> Range<u32>;
+}
+#+end_src
+
+Rules:
+- Every cell edge comes from ~x_edge~ or ~y_edge~, with an integer index. Nothing
+  computes an edge from a window corner. Thus a tiled burn and a full burn see
+  identical cell boxes.
+- ~from_extent~ does not store ~xmax~ or ~ymin~. The right grid edge is
+  ~x_edge(ncol)~, which can differ from ~xmax~ by a few ulp.
+
+** Output tables
+
+The output is the controlledburn four-table contract, in struct-of-arrays (SoA) form.
+All indices are global, 0-based lattice indices. ~col_end~ is exclusive. ~id~ is the id
+that the caller gives.
+
+#+begin_src rust
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Runs   { pub row: Vec<u32>, pub col_start: Vec<u32>, pub col_end: Vec<u32>, pub id: Vec<u32> }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Edges  { pub row: Vec<u32>, pub col: Vec<u32>, pub fraction: Vec<f32>, pub id: Vec<u32> }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lines  { pub row: Vec<u32>, pub col: Vec<u32>, pub length: Vec<f32>, pub id: Vec<u32> }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Points { pub row: Vec<u32>, pub col: Vec<u32>, pub id: Vec<u32> }
+
+/// The table rows of one input geometry (the CSC index).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeomSpan {
+    pub id: u32,
+    pub runs: Range<usize>, pub edges: Range<usize>,
+    pub lines: Range<usize>, pub points: Range<usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BurnResult {
+    pub runs: Runs, pub edges: Edges, pub lines: Lines, pub points: Points,
+    pub geom_ptr: Vec<GeomSpan>,
+}
+
+impl BurnResult {
+    pub fn clear(&mut self);   // keeps capacity
+    pub fn len(&self) -> usize;   // total table rows
+    pub fn is_empty(&self) -> bool;
+    /// Row-major (CSR) index over `rows`. Errors if a table row is outside `rows`.
+    pub fn to_row_major(&self, rows: Range<u32>) -> Result<RowMajor, GridError>;
+}
+
+/// CSR view. For row r: `runs[run_ptr[r - r0]..run_ptr[r - r0 + 1]]` are indices into
+/// `BurnResult::runs`; the same for edges, lines and points. Within a row, the
+/// entries keep burn order; they are not sorted by column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowMajor {
+    pub rows: Range<u32>,
+    pub run_ptr: Vec<usize>, pub runs: Vec<usize>,
+    pub edge_ptr: Vec<usize>, pub edges: Vec<usize>,
+    pub line_ptr: Vec<usize>, pub lines: Vec<usize>,
+    pub point_ptr: Vec<usize>, pub points: Vec<usize>,
+}
+#+end_src
+
+- ~to_row_major~ is a stable counting sort by row: O(n + rows). It stores
+  permutation indices and copies no table data.
+- ~geom_ptr~ holds one ~GeomSpan~ for each input item, including empty geometries
+  (with empty ranges), in input order.
+- ~fraction~ and ~length~ are ~f32~, the same as in controlledburn.
+
+*Required crate and ~BurnResult~ documentation: the relation to sparse matrices.* The
+crate docs (~lib.rs~) and the ~BurnResult~ docs must say the following, in Simple
+Technical English:
+- The polygon output is the sparse coverage matrix ~A[cell, geometry]~. The value is
+  the coverage fraction, and it is 1 for interior cells. Zonal statistics are
+  ~(Aᵀv) / (Aᵀ1)~ for a raster ~v~. This is what exactextract computes.
+- ~runs~ is a run-length layer: each entry is one interval of columns, all with the
+  value 1 ("RLE-CSR"). Plain CSR stores one entry per cell, which is O(area). The runs
+  keep the storage at O(perimeter).
+- ~edges~ is COO: explicit ~(row, col, value)~ triples.
+- The burn order is geometry-major, so ~geom_ptr~ is a CSC index, with the geometry
+  as the column.
+- ~to_row_major()~ builds the CSR index (~row_ptr~).
+- Two geometries can cover the same cell, so the full object is a sparse
+  ~(row, col, id)~ tensor. One geometry has at most one record per cell (see
+  [[*Multipolygons][Multipolygons]]).
+
+** Burner
+
+#+begin_src rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode { Coverage, Approx }
+
+/// One per worker. `Send`, not `Sync`. Owns the scratch buffers and reuses them.
+#[derive(Debug)]
+pub struct Burner { mode: Mode, scratch: Scratch }
+
+impl Burner {
+    pub fn new(mode: Mode) -> Self;
+    pub fn mode(&self) -> Mode;
+
+    /// Burns each `(id, geometry)` onto `grid` and appends to `out`.
+    /// On error, `out` is truncated back to its state at the call start.
+    pub fn burn_into<G, I>(&mut self, grid: &Grid, geoms: I, out: &mut BurnResult)
+        -> Result<(), BurnError>
+    where G: GeometryTrait<T = f64>, I: IntoIterator<Item = (u32, G)>;
+
+    pub fn burn<G, I>(&mut self, grid: &Grid, geoms: I) -> Result<BurnResult, BurnError>
+    where G: GeometryTrait<T = f64>, I: IntoIterator<Item = (u32, G)>;
+}
+
+/// Envelope of a geometry (finite coordinates only). None if it has none.
+/// Lets an orchestrator select the geometries for a chunk.
+pub fn bbox<G: GeometryTrait<T = f64>>(geom: &G) -> Option<[f64; 4]>;  // xmin, ymin, xmax, ymax
+#+end_src
+
+** Errors
+
+#+begin_src rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeomKind { Point, LineString, Polygon, MultiPoint, MultiLineString,
+                    MultiPolygon, GeometryCollection, Rect, Triangle, Line }
+
+#[derive(Debug, thiserror::Error)]
+pub enum BurnError {
+    #[error("geometry {id}: unsupported type {kind:?}; split collections into one type each")]
+    Unsupported { id: u32, kind: GeomKind },
+    #[error("geometry {id}, ring {ring}, vertex {vertex}: non-finite coordinate ({x}, {y})")]
+    NonFinite { id: u32, ring: usize, vertex: usize, x: f64, y: f64 },
+    #[error("geometry {id}, ring {ring}: {n} coordinates; a closed ring needs at least 4")]
+    ShortRing { id: u32, ring: usize, n: usize },
+    #[error("geometry {id}, ring {ring}: walk did not converge after {coords} coordinates")]
+    WalkDiverged { id: u32, ring: usize, coords: usize },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GridError {
+    #[error("non-finite lattice value: {0}")]          NonFinite(&'static str),
+    #[error("resolution must be > 0: dx = {dx}, dy = {dy}")] Resolution { dx: f64, dy: f64 },
+    #[error("empty range: rows {rows:?}, cols {cols:?}")] Empty { rows: Range<u32>, cols: Range<u32> },
+    #[error("window rows {rows:?}, cols {cols:?} is outside the grid")] Outside { rows: Range<u32>, cols: Range<u32> },
+    #[error("extent is invalid: {0}")]                 Extent(&'static str),
+}
+#+end_src
+
+- For a ~LineString~ or a ~MultiLineString~, the ~ring~ field gives the index of the
+  line part. For a ~Point~ or a ~MultiPoint~, it gives the index of the point.
+- ~Burner::burn_into~ stops at the first error. An orchestrator that wants "skip and
+  report" calls it once for each geometry. That costs no extra allocation, because the
+  scratch buffers stay in the ~Burner~.
+
+** Output order and determinism
+
+The output order is:
+1. ids in the order the caller gives them;
+2. for each geometry: polygons, then lines, then points;
+3. for a polygon geometry: rows ascending, then columns ascending, with runs and edges
+   interleaved by column within a row (runs and edges are separate tables, but each
+   table is in this order);
+4. for a line geometry: rows ascending, then columns ascending (the merged cells of all
+   parts);
+5. for a point geometry: input order.
+
+A tiled burn and a feature-split burn must each give the same records as the full
+burn, after a stable sort by ~(id, row, col)~ on each table.
+
+** Parallelism contract
+
+The core is sequential. An orchestrator runs it in parallel like this:
+- *Feature-parallel*: each worker has its own ~Burner~ and ~BurnResult~, and burns a
+  range of ~(id, geometry)~ pairs onto the full grid. The merge is a concatenation.
+- *Raster-parallel* (brix chunks): each worker burns the geometries whose ~bbox~ meets
+  its chunk onto ~grid.window(rows, cols)~. Each chunk output is complete for its
+  window, so no merge is necessary.
+- ~Grid~ is ~Clone + Send + Sync~. ~Burner~ and ~BurnResult~ are ~Send~.
+
+* Algorithms
+
+The arithmetic is a faithful port. Only the storage changes (see [[*Storage][Storage]]). Each
+ported item has a docstring that names its upstream file and function (see
+[[*Documentation rules][Documentation rules]]).
+
+** Input normalization (~input.rs~)
+
+- The input is read through ~geo-traits~ ~GeometryTrait~. Only ~x()~ and ~y()~ of
+  each coordinate are used, and Z and M are ignored.
+- *Kinds*: Rect becomes a 4-corner polygon. Triangle becomes a polygon. Line becomes a
+  2-point line string. GeometryCollection gives ~BurnError::Unsupported~.
+- *Rings* are copied into the ~Scratch~ coordinate buffer. If the first coordinate is
+  not equal to the last one, the copy appends the first coordinate (auto-close).
+- *Ring sizes*: a ring with 0 coordinates is skipped. After the auto-close, a ring
+  with fewer than 4 coordinates gives ~ShortRing~. (controlledburn skips it silently.)
+- *Non-finite* coordinates give ~NonFinite~. Exception: a point whose ~coord()~ is
+  ~None~ (POINT EMPTY) is skipped.
+- *Empty geometries* are skipped. They still get a ~GeomSpan~.
+- *Orientation*: signed area by the shoelace formula, with counter-clockwise positive.
+  This is controlledburn ~signed_area~ (~cpp/src/scanline.cpp~). A ring that is not
+  CCW is reversed in the copy. Note: exactextract ~area~ (~src/measures.cpp~) uses the
+  opposite sign. The port keeps both functions under different names and documents the
+  sign of each.
+
+** Processing region (all polygon paths)
+
+Source: exactextract ~processing_region~ and ~get_geometry_grid~
+(~src/raster_cell_intersection.cpp~).
+- The region is the union of the component envelopes, intersected with the grid
+  window.
+- If the region is empty, the geometry gives no output.
+- On the lattice, the index range is
+  ~cols = floor((xmin - x0)/dx) - 1 .. floor((xmax - x0)/dx) + 2~, and the same for
+  rows with ~(y0 - y)/dy~. The range is then clamped to the window. The one-cell margin
+  replaces the floating-point fixes in exactextract ~Grid::shrink_to_fit~
+  (~src/grid.h~): a wider subgrid is always safe for the walker.
+- The walker grid is this subgrid plus one padding cell on each side. This is
+  exactextract ~infinite_extent~ (~src/grid.h~). A padding cell box goes from the
+  subgrid edge to ~f64::MAX~ (or ~-f64::MAX~).
+
+** Coverage path
+
+Sources: controlledburn ~walk_polyline~, ~walk_ring~, ~process_polygon~
+(~cpp/src/scanline.cpp~); controlledburn ~analytical_covered_fraction~,
+~closed_ring_covered_fraction~ (~cpp/src/ee/analytical_coverage.h~); exactextract
+~Box::crossing~, ~Box::side~ (~src/box.cpp~), ~perimeter_distance~
+(~src/perimeter_distance.cpp~), ~left_hand_area~ (~src/traversal_areas.cpp~),
+~RasterCellIntersection::process~ and ~process_line~
+(~src/raster_cell_intersection.cpp~).
+
+*** Walker
+
+Port ~walk_polyline~ arithmetic without change. These rules are required, and each one
+has a regression test:
+1. *Lattice snap* (~snap_to_lattice~): before the walk, each vertex within
+   ~1e-9 * dx~ (or ~1e-9 * dy~) of a lattice edge inside the subgrid moves onto that
+   edge. In the port, the edge comes from ~Lattice::x_edge~ / ~y_edge~.
+2. *Start cell* from the first coordinate, with exactextract ~Grid::get_row~ /
+   ~get_column~ semantics on the padded subgrid. A coordinate on the right or bottom
+   edge of the subgrid goes to the last real row or column.
+3. *Point location*: ~strictly_contains~ means inside, ~contains~ means on the
+   boundary, and anything else is outside.
+4. *Exit crossing*: ~Box::crossing(from, next)~, where ~from~ is the previous
+   original vertex if there is one, else the last traversal coordinate.
+5. *Rounding guard*: if the crossing is not finite, or is further from ~from~ than
+   ~next~ by more than a factor of ~1 + 1e-9~ (in squared distance), the exit point is
+   ~next~ clamped onto the box. The exit side is the side that ~next~ overshoots,
+   tested in the order left, right, bottom, top.
+6. *Forced exit*: if a traversal ends on the box boundary with no exit side, its exit
+   side is ~box.side(last)~.
+7. *Reprocess branch* (closed rings only): if the first traversal has an exit but no
+   entry, its coordinates are appended to the end of the ring buffer, so that the walk
+   enters the start cell again with a proper entry side. If the buffer grows past
+   ~4 * n_input + 64~, the walk gives ~WalkDiverged~.
+8. *Move*: the exit side moves the walk one cell (TOP: row - 1; BOTTOM: row + 1;
+   LEFT: col - 1; RIGHT: col + 1).
+
+The walker records traversals in the arena (see [[*Storage][Storage]]), not in a map.
+
+*** Cell fraction
+
+For each cell of the subgrid that is not padding, take the valid traversals. A
+traversal is valid if it has an entry side and an exit side and more than one unique
+coordinate, or if it has no entry side and is a closed ring.
+- One valid traversal that is a closed ring: ~|area| / cell_area~
+  (~closed_ring_covered_fraction~).
+- One valid traversal that is not a closed ring: ~analytical_covered_fraction~. This
+  is the traversal path, plus the cell corners on the clockwise arc from the exit back
+  to the entry, closed. Corners are tested with the ~1e-12~ margins of the
+  original. If the entry and exit perimeter distances are within ~1e-12~ of each
+  other, the result is the area of the closed path.
+- More than one valid traversal: exactextract ~left_hand_area(box, traversals) /
+  cell_area~.
+
+The fraction gets a factor of +1 for an exterior ring and -1 for a hole.
+
+*** Winding deltas
+
+For each valid traversal that has an entry and an exit (closed rings give no winding),
+with ~y_mid~ the cell-centre y of the row:
+- The traversal crosses if ~(entry_y >= y_mid && exit_y < y_mid) || (entry_y < y_mid && exit_y >= y_mid)~.
+  The test is half-open: a point on ~y_mid~ counts as above it. This is controlledburn
+  fix ~0efe32f~.
+- The delta is -1 if ~entry_y >= y_mid~ (downward), else +1. It is multiplied by +1
+  for an exterior ring and -1 for a hole.
+- The deltas are recorded even when the fraction is zero. A traversal along a cell
+  wall has zero area but still crosses ~y_mid~.
+- Padding columns (left and right of the subgrid) carry winding deltas for their row.
+  Padding rows are ignored.
+
+*** Multipolygons
+
+Follow upstream (exactextract ~RasterCellIntersection::process~). All rings of all
+components of one geometry go into one accumulator, with one processing region and one
+sweep. So one geometry gives at most one record per cell.
+- controlledburn sweeps each component separately. Its comment says that this
+  prevents winding "bleed" between components. The design does not keep that, for two
+  reasons:
+  - In coverage mode an edge value comes from its fraction, not from the winding.
+  - The winding numbers of disjoint components add correctly.
+- The multipolygon tests and the oracle check this decision.
+- *Fallback, only if the oracle shows a bleed*: one sweep per component, then a merge
+  of records with the same ~(row, col, id)~. The merge adds the fractions and changes
+  a sum ~>= 1 - 1e-6~ to a one-cell run. Report this to the user before you use the
+  fallback.
+
+*** Sweep
+
+For each row of the subgrid, with the accumulator sorted by column and merged by
+column (fractions added, deltas added):
+- ~winding = 0~, ~prev_col = none~.
+- For each merged cell ~c~:
+  - If ~winding != 0~, ~prev_col~ is set, and ~c > prev_col + 1~: emit the run
+    ~[prev_col + 1, c)~. Padding columns count as "set", which is controlledburn's
+    ~prev_col > -2~ rule.
+  - If ~c~ is a real column: with ~w~ = the fraction and ~tol = 1e-6~, emit an edge if
+    ~tol < w < 1 - tol~, and emit the one-cell run ~[c, c+1)~ if ~w >= 1 - tol~.
+  - ~winding += delta(c)~; ~prev_col = c~.
+- Runs are clamped to the window columns. Runs and edges outside the window are not
+  emitted.
+
+The dead approx branch of ~walk_ring~ (~winding_delta_left~) is not ported:
+controlledburn ~process_geometry~ always sends approx polygons to
+~process_polygon_approx~.
+
+** Approx path
+
+Source: controlledburn ~process_polygon_approx~ (~cpp/src/scanline.cpp~). Faithful port,
+on the lattice, for all rings of all components of the geometry together:
+- The row range is the envelope rows clamped to the window: ~row_lo = max(r0, floor((y0 - ymax)/dy))~
+  and ~row_hi = min(r1 - 1, floor((y0 - ymin)/dy))~.
+- For each ring, the winding factor is +1 if the ring is CCW, else -1. It is negated for
+  a hole.
+- For each edge ~(x0e, y0e) -> (x1e, y1e)~ with ~y0e != y1e~: take ~ya < yb~. The rows
+  are those with ~ya < y_mid(r) <= yb~, where ~y_mid(r) = y0 - (r + 0.5)*dy~:
+  ~e_lo = max(row_lo, ceil((y0 - yb)/dy - 0.5 - 1e-10))~ and
+  ~e_hi = min(row_hi, ceil((y0 - ya)/dy - 0.5 - 1e-10) - 1)~.
+- The intercept is ~x = x0e + (y_mid - y0e)/(y1e - y0e) * (x1e - x0e)~.
+- The delta is ~(y1e < y0e ? -1 : +1) * factor~. It comes from the edge endpoints, not
+  from ~y0e~ against ~y_mid~. This is controlledburn fix ~65af8d7~.
+- *Sweep* for each row, with the intercepts sorted by ~x~ (~f64::total_cmp~):
+  ~col = floor((x - x0)/dx)~ clamped to the window columns,
+  ~x_mid = x_edge(col) + 0.5*dx~, and left of centre means ~x <= x_mid~
+  (left-inclusive).
+  - Left of centre: going from not-zero to zero closes the run before ~col~. Going
+    from zero to not-zero starts the run at ~col~.
+  - Right of centre: going from not-zero to zero closes the run after ~col~ (clamped to
+    the window end). Going from zero to not-zero starts the run at ~col + 1~.
+  - If the winding is not zero at the row end, the run goes to the window end.
+- The approx path gives no edges.
+
+** Lines
+
+Source: controlledburn ~process_line~ (~cpp/src/scanline.cpp~). Each part of the line
+is walked with ~closed = false~ (no reprocess branch; a traversal with no entry side is
+valid). For each real cell in the window, the length is the sum of the segment lengths
+of all its traversals. A cell with a length > 0 gives one ~Lines~ record. The cells of
+all parts of one geometry are merged, so there is one record per cell.
+Change from controlledburn: the walker uses the window subgrid with padding, not the
+full grid. A horizontal or vertical line has a degenerate envelope, so the processing
+region for lines has the one-cell margin on each side (see [[*Processing region (all polygon paths)][Processing region]]).
+
+** Points
+
+- ~col = floor((x - x0)/dx)~ and ~row = floor((y0 - y)/dy)~ on the lattice. The point
+  is emitted if ~(row, col)~ is inside the window.
+- Change from controlledburn: a point on the right or bottom edge of the grid is not
+  moved into the last column or row. Each point belongs to exactly one lattice cell,
+  so tiled burns stay exact (a point on a tile seam belongs to one tile only). The
+  parity tests that use this edge case get an entry in ~oracle/known_diffs.toml~ with
+  this reason.
+
+* Storage
+
+The arithmetic does not change. Only the storage changes.
+
+| #  | controlledburn (C++)                                                        | burnscars                                                                                                 | Gain                              |
+|----+-----------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------|
+| O1 | ~std::map<(row,col), CellRecord>~, one ~vector<Coordinate>~ per traversal    | arena: ~coords: Vec<Coord>~ and ~travs: Vec<Trav { row, col, seq, start, len, entry, exit }>~, then one ~sort_unstable~ by ~(row, col, seq)~ | no tree, no allocation per cell visit |
+| O2 | ~vector<vector<BoundaryCellRecord>>~ with a linear ~find_or_create~         | ~acc: Vec<CellAcc { row, col, cov: f32, wind: i32 }>~, one sort by ~(row, col)~, then one merge pass       | no O(k²) scan in a row            |
+| O3 | ~analytical_covered_fraction~ builds a polygon ~vector~                      | shoelace sum over the traversal and the corners, with no buffer                                           | no allocation per edge cell       |
+| O4 | approx: ~vector<vector<Intercept>>~ per polygon                             | ~icpt: Vec<(row: u32, x: f64, delta: i32)>~, sorted by ~(row, x)~                                        | one reused buffer                 |
+| O5 | lines: ~CellMap~, then a sum                                                | sum over the arena groups                                                                                 | same as O1                        |
+| O6 | new buffers for each polygon                                                | all buffers live in ~Scratch~ and are cleared between geometries                                          | no allocation in steady state     |
+
+- ~seq~ is the visit order. ~left_hand_area~ does not depend on the order of the
+  chains, but ~seq~ keeps the result deterministic.
+- O3 must give the same value as the C++ code bit for bit: the same summation order,
+  with the same first vertex as the origin (the ~x0~ shift of the shoelace formula).
+- ~Scratch~ is private. It holds: the ring coordinate buffer, ~coords~, ~travs~, ~acc~,
+  ~icpt~, and the left-hand-area chain buffer.
+
+* Deliberate differences from controlledburn
+
+| Item                              | controlledburn                      | burnscars                                    | Reason                                    |
+|-----------------------------------+-------------------------------------+----------------------------------------------+-------------------------------------------|
+| Cell edges                        | from each subgrid origin            | from the lattice origin                      | exact tiles; results can differ by ulp    |
+| Multipolygon                      | one sweep per component             | one sweep per geometry                       | follow exactextract                       |
+| Ring with 1–3 coordinates         | skipped silently                    | ~ShortRing~ error                            | user request: clear errors                |
+| Unclosed ring                     | not handled                         | auto-closed                                  | geo-traits does not guarantee closure     |
+| Errors                            | notes, continue                     | ~Result~, fail-fast, atomic                  | user request                              |
+| Point on right or bottom grid edge | moved into the last column or row  | half-open lattice cell                       | exact tiles                               |
+| Lines                             | walked on the full grid             | walked on the window with padding            | O(cells touched) in the window            |
+| Output layout                     | array of structs                    | struct of arrays + ~geom_ptr~                | zero-copy export, CSC index               |
+| Index type                        | ~int32~                             | ~u32~ (global lattice indices)               | grids up to 4.29 × 10⁹ rows and columns   |
+| ~winding_delta_left~              | present, never reached              | removed                                      | dead code                                 |
+
+* Testing
+
+The test files in ~tests/~:
+- ~invariants.rs~: a port of ~cpp/tests/test_burn.cpp~. It checks that coverage
+  conserves area (the sum of runs and edge fractions times the cell area is the
+  polygon area, to ~1e-6~ relative), that lines conserve length, how points go into
+  cells, and degenerate input.
+- ~regression.rs~: one test for each controlledburn fix (lattice snap ~1f9a53c~,
+  row-centre crossing on a wall ~0efe32f~, approx intercept sign ~65af8d7~), plus the
+  cases of R ~tests/testthat/test-edge-zoo.R~, ~test-lattice-snap.R~ and
+  ~test-shared-boundary.R~. It also has one test for each walker rule 1–8.
+- ~multipolygon.rs~: disjoint components, components that share cells, components on
+  both sides of the window, and holes in both orientations. One record per
+  ~(row, col, id)~. The area is conserved.
+- ~parity.rs~: reads ~fixtures/geometries.csv~ and ~fixtures/expected.csv~ (copied from
+  controlledburn ~fixtures/~) and checks the aggregates with the tolerances in the file.
+- ~oracle.rs~: see [[*Oracle][Oracle]].
+- ~partition.rs~ (proptest): random polygons and grids. The feature-split burn and the
+  tile-split burn (random chunk sizes) are each equal to the full burn after a stable
+  sort by ~(id, row, col)~. Bit-for-bit equality is the target. If the walker crossing
+  arithmetic makes this impossible at seams, stop and report to the user. The proposed
+  fallback is equal cell sets and ~|Δf| <= 1e-6~.
+- ~alloc.rs~ (counting global allocator, test only): after a warm-up burn, a second
+  ~burn_into~ of the same input into a cleared ~BurnResult~ makes zero allocations.
+- Error tests: each ~BurnError~ and ~GridError~ variant, and the truncation of ~out~
+  after an error.
+
+* Oracle
+
+- ~oracle/generate.py~ runs under uv (~oracle/pyproject.toml~ and ~uv.lock~ pin
+  ~exactextract~, ~shapely~, ~rasterio~, ~numpy~). The recipe ~just oracle~ runs it.
+- ~oracle/corpus.wkt~: one case per line: a name, the WKT, and a grid
+  (~xmin ymin xmax ymax ncol nrow~). The cases are the edge zoo, the ~fixtures/~ cases,
+  the multipolygon cases, and seeded random polygons (stars, combs, slivers, rings with
+  ~10⁴~ vertices, vertices on the lattice, vertices a few ulp from it).
+- *Coverage oracle*: exactextract per-cell coverage (operations ~cell_id~ and
+  ~coverage~), written to ~fixtures/oracle/coverage.csv~ as ~case,row,col,fraction~.
+- *Approx oracle*: ~rasterio.features.rasterize~ (GDAL, ~all_touched=False~), written
+  to ~fixtures/oracle/approx.csv~ as ~case,row,col~.
+- *Comparison* in ~tests/oracle.rs~:
+  - Coverage: the cell sets must be equal after the removal of cells with ~f < 1e-6~
+    on both sides. The fractions must satisfy ~|Δf| <= 1e-6~. A run cell counts as ~f = 1~.
+  - Approx: the cell sets must be equal.
+- *Known differences*: ~oracle/known_diffs.toml~ lists ~case~ (and optional cells)
+  with a ~reason~. A listed case passes only if its difference is the listed one. An
+  entry with no reason fails the test.
+- The fixtures are committed, so ~cargo test~ needs no Python.
+- *Differential fuzz*: an ~#[ignore]~ test in ~tests/oracle.rs~ generates polygons
+  with proptest, calls ~generate.py~ through a subprocess, and compares the outputs.
+  ~just fuzz-oracle~ runs it. The nightly workflow runs it too.
+
+* Benchmarks
+
+~benches/burn.rs~ (criterion), both modes: a circle with 10⁶ vertices, 10⁴ small
+polygons, and grid sizes from 10⁴ to 10⁹ cells. The comparison with controlledburn C++
+and rusterize is a README TODO.
+
+* Tooling and CI
+
+Copy from brix (~~/repos/brix~):
+- ~rustfmt.toml~, ~clippy.toml~ (keep ~allow-*-in-tests~; change ~doc-valid-idents~ to
+  the names used here plus ~".."~), ~rust-toolchain.toml~ (channel 1.98.0, with
+  ~clippy~ and ~rustfmt~), ~.taplo.toml~ (change ~exclude~ to ~["target/**"]~).
+- The ~[workspace.lints.rust]~ and ~[workspace.lints.clippy]~ tables, as crate-level
+  ~[lints.rust]~ and ~[lints.clippy]~. Remove ~reversed_empty_ranges = "allow"~: it is
+  for brix's numpy-style negative ranges, and this crate has none.
+- ~deny.toml~: the ~[licenses]~ allow-list (MIT, Apache-2.0,
+  Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, Unicode-3.0 if a
+  dependency needs it). No LGPL, no GPL. ~[advisories]~ with no ignore entries: the
+  brix ignores are for AWS and zarrs.
+- ~Justfile~ recipes: ~build~, ~check~, ~lint~ (~cargo clippy --all-targets --all-features -- -D warnings~),
+  ~format~, ~format-toml~, ~test~ (~cargo nextest run~), ~test-lib~ (in-source tests
+  only), ~doctest~, ~bench~, ~oracle~, ~fuzz-oracle~, ~check-deps~ (~cargo deny check~),
+  ~ci~ (format --check, lint, test, doctest), ~check-all~ (ci, check-deps, format-toml --check).
+
+~.github/workflows/ci.yml~: brix ~ci.yml~ with the same pinned action SHAs and the
+same toolchain read from ~rust-toolchain.toml~. Jobs: ~changes~ (paths filter for
+prose-only PRs), ~fmt~, ~clippy~, ~test~ (nextest + doctest), ~deny~, ~toml-fmt~.
+Remove the brix-only steps: Python, protoc, the disk-space cleanup, the test containers,
+~check-features~ and the docs deep-links job.
+
+~.github/workflows/oracle-nightly.yml~: on ~schedule~ and ~workflow_dispatch~. It
+installs uv and runs ~just oracle~ (fails if the fixtures change) and
+~just fuzz-oracle~.
+
+* Documentation rules
+
+- Write all prose, docstrings and comments in Simple Technical English (ASD-STE100
+  style).
+- Comments are 1–2 lines, for an expert reader.
+- Each ported item names its upstream source in its docstring, as file and function.
+  Examples:
+  - ~/// Port of exactextract `Box::crossing` (src/box.cpp).~
+  - ~/// From controlledburn `walk_polyline` (cpp/src/scanline.cpp); arena storage replaces `CellMap`.~
+- Each deliberate difference (see the table above) has a comment at the place in the
+  code where it occurs.
+- The crate docs and the ~BurnResult~ docs contain the sparse-matrix text from
+  [[*Output tables][Output tables]].
+- The README pins the upstream commits and gives the upstream rule and the GEOS rule.
+
+* README TODO list
+
+The README has a "TODO" section with these items:
+- R1: rotate each ring to start on a cell boundary, which removes the reprocess branch.
+  Do this only after the oracle suite passes.
+- R2: snap each vertex when the walker reads it, so the walker borrows the input with
+  no copy (needs R1).
+- R3: prepared geometry: row-bucketed edges in a ~Sync~ struct, shared with ~Arc~
+  across brix chunks, so each chunk scans only its row band.
+- R4: pre-clip each ring to the window, for very large polygons on small chunks.
+- Merge adjacent one-cell runs and interior runs in a row (controlledburn emits them
+  separately).
+- Antimeridian, as an opt-in ~Wrap::Longitude~ lattice option. Four input conventions:
+  A, split at ±180 (works already as a multipolygon); B, continuous past 180 (burn
+  shifted copies at ~k*360~ and wrap the columns); C, jumps at ±180 (unwrap where
+  ~|Δx| > 180~, then B); D, rings that enclose a pole (close the ring through the pole).
+  Test: burn the split form A and compare.
+- DE-9IM: see [[*Future: DE-9IM][Future: DE-9IM]].
+- Materialize and pixel functions, as a brix adapter.
+- Benchmarks against controlledburn C++ and rusterize.
+- Python bindings.
+
+* Future: DE-9IM
+
+This part is not in v1. The v1 types must not block it.
+
+For a polygon P and a cell box C, the DE-9IM matrix can be decoded from a compressed
+form: the fraction ~f~, a one-byte contact mask per edge cell, and one bit per geometry.
+
+| Entry  | Source                                                                       |
+|--------+------------------------------------------------------------------------------|
+| II     | ~2~ if ~f > 0~, else ~F~                                                      |
+| EI     | ~2~ if ~f < 1~, else ~F~                                                      |
+| EE     | always ~2~                                                                   |
+| IE, BE | per geometry: ~2~ / ~1~ unless P is inside one cell (one bit per geometry)  |
+| BI     | mask bit: a traversal goes through the cell interior                         |
+| BB     | mask bits: ~1~ if a segment lies on a cell wall, ~0~ if contact is at points only, ~F~ if no contact |
+| IB, EB | mask bits: part of ∂C is in int P / in ext P (not derivable from ~f~)         |
+
+- Run cells all have the same matrix (~212F01FF2~, P contains C), so they need no
+  storage.
+- The later work adds parallel columns ~edge_contact: Vec<u8>~ and a ~touches~ table
+  (cells with ~f = 0~ and contact on a wall or corner). The existing tables do not
+  change.
+- Only the coverage path can give DE-9IM. The approx path has no boundary data.
+- Oracle: shapely ~relate(geometry, cell_box)~, used as a black box.
+- Upstream rule: no GEOS code and no JTS code. Derive the decode table from the
+  DE-9IM definitions.
+
+* Risks
+
+- *Partition bit-exactness*: the entry point into a window cell can come from a padding
+  cell in one tiling and from a real cell in another. The crossing uses the same
+  original vertices and the same lattice wall, so the result should be identical, but
+  this is not proven. ~partition.rs~ finds out.
+- *Multipolygon decision*: if the oracle shows winding bleed with one sweep per
+  geometry, use the fallback in [[*Multipolygons][Multipolygons]] and report it.
+- *Oracle differences*: exactextract has its own lattice edge cases. A difference can
+  be an oracle bug. Each one needs a reason in ~known_diffs.toml~.
+- *Lattice edges against the C++ subgrid edges*: fractions can differ by a few ulp.
+  The parity tolerance (~1e-6~) covers this.
