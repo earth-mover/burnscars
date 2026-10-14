@@ -756,6 +756,18 @@ Then it runs ~just fuzz-oracle~.
 - The crate docs and the ~BurnResult~ docs contain the sparse-matrix text from
   [[*Output tables][Output tables]].
 - The README pins the upstream commits and gives the upstream rule and the GEOS rule.
+- The README has an "Inspiration and credits" section, near the top, with a link and
+  one line for each project:
+  - controlledburn (https://github.com/hypertidy/controlledburn, Michael Sumner): the
+    code that this crate ports; sparse output, the winding sweep, the approx mode.
+  - exactextract (https://github.com/isciences/exactextract, Daniel Baston, ISciences):
+    the exact coverage algorithm (cell traversal, crossing, ~left_hand_area~); the
+    reference for correctness.
+  - fasterize (https://github.com/ecohealthalliance/fasterize): the cell-centre rule
+    and the pixel functions that approx mode and a later materialize follow.
+  - rusterize (https://github.com/ttrotto/rusterize): prior art for scanline
+    rasterization in Rust.
+  - GDAL rasterize: the cell-centre oracle for approx mode (through rasterio).
 
 * README TODO list
 
