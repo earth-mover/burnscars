@@ -23,6 +23,12 @@ room for a later per-cell DE-9IM estimate (see [[*Future: DE-9IM][Future: DE-9IM
 | controlledburn | ~~/repos/controlledburn~ | ~1f8a25f~ | Apache-2.0 | The code to port                      |
 | exactextract   | ~~/repos/exactextract~   | ~67969d9~ | Apache-2.0 | Reference for all geometry algorithms |
 
+Full commit SHAs, for permalinks:
+- controlledburn: ~1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558~
+  (https://github.com/hypertidy/controlledburn)
+- exactextract: ~67969d99d1dfe1115be955087e2c48e1aab133e2~
+  (https://github.com/isciences/exactextract)
+
 The controlledburn core is in ~cpp/src/scanline.cpp~ (the engine), ~cpp/src/wkb.cpp~
 (not ported) and ~cpp/src/ee/~ (the vendored exactextract subset). The exactextract
 originals are in ~src/~ of that repo.
@@ -66,8 +72,12 @@ In v1:
 
 Input validity: the crate supports valid OGC input only. For invalid input (rings
 that intersect themselves, components that overlap), the output is not specified, but
-it is deterministic. Fill rule: nonzero winding. For valid input, nonzero winding and
-even-odd give the same result.
+it is deterministic. Fill rule: nonzero winding. The approx oracle, GDAL
+~GDALdllImageFilledPolygon~ (~alg/llrasterize.cpp~), uses even-odd: it sorts the
+crossings of each scanline and fills between pairs. For valid input the two rules give
+the same result. GDAL also samples at the cell centre (~y + 0.5~) and uses a half-open
+edge test (~dy < dy2 && dy >= dy1~ in image rows), which is the same as the approx
+rule ~ya < y_mid <= yb~ in world coordinates.
 
 Not in v1 (the README TODO lists these items, see [[*README TODO list][README TODO list]]):
 - Materialize and pixel functions (a brix adapter will do this).
@@ -105,7 +115,7 @@ Not in v1 (the README TODO lists these items, see [[*README TODO list][README TO
 #+begin_src text
 burnscars/
   Cargo.toml          # deps: geo-traits 0.3, thiserror 2
-                      # dev-deps: proptest, criterion, wkb (a version on geo-traits 0.3), geo-types
+                      # dev-deps: proptest, criterion, wkb 0.9.2 (uses geo-traits 0.3), geo-types
   CLAUDE.md  NOTICE  LICENSE  README.md
   rustfmt.toml  clippy.toml  rust-toolchain.toml  .taplo.toml  deny.toml  Justfile
   .github/workflows/ci.yml  .github/workflows/oracle-nightly.yml
@@ -747,10 +757,32 @@ Then it runs ~just fuzz-oracle~.
 - Write all prose, docstrings and comments in Simple Technical English (ASD-STE100
   style).
 - Comments are 1–2 lines, for an expert reader.
-- Each ported item names its upstream source in its docstring, as file and function.
-  Examples:
-  - ~/// Port of exactextract `Box::crossing` (src/box.cpp).~
-  - ~/// From controlledburn `walk_polyline` (cpp/src/scanline.cpp); arena storage replaces `CellMap`.~
+- *Citations in the code.* Each file that copies or ports upstream code cites its
+  sources:
+  - The module docstring (~//!~) lists each upstream project, the pinned commit, the
+    upstream file paths, and the licence. Example for ~src/geom/box_.rs~:
+    #+begin_src rust
+    //! Cell box geometry.
+    //!
+    //! Ported from exactextract (Apache-2.0, Copyright 2018-2022 ISciences, LLC),
+    //! commit 67969d99d1dfe1115be955087e2c48e1aab133e2:
+    //! `src/box.h`, `src/box.cpp`.
+    #+end_src
+  - Each ported function, method or type names its upstream function and file, with a
+    permalink at the pinned commit. Examples:
+    #+begin_src rust
+    /// Port of exactextract `Box::crossing`
+    /// ([src/box.cpp](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/box.cpp)).
+    /// From controlledburn `walk_polyline`
+    /// ([cpp/src/scanline.cpp](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp));
+    /// arena storage replaces `CellMap`.
+    #+end_src
+  - Code that follows a project as a rule or an oracle, with no copied code, cites it
+    in the same way. Examples: the GDAL centre rule (~alg/llrasterize.cpp~) in
+    ~approx.rs~, and exactextract ~add_ring_results~ for the merge of line parts in
+    ~line.rs~.
+  - Tests that port upstream tests cite the upstream test file (for example
+    ~cpp/tests/test_burn.cpp~, ~tests/testthat/test-edge-zoo.R~).
 - Each deliberate difference (see the table above) has a comment at the place in the
   code where it occurs.
 - The crate docs and the ~BurnResult~ docs contain the sparse-matrix text from
@@ -763,8 +795,9 @@ Then it runs ~just fuzz-oracle~.
   - exactextract (https://github.com/isciences/exactextract, Daniel Baston, ISciences):
     the exact coverage algorithm (cell traversal, crossing, ~left_hand_area~); the
     reference for correctness.
-  - fasterize (https://github.com/ecohealthalliance/fasterize): the cell-centre rule
-    and the pixel functions that approx mode and a later materialize follow.
+  - fasterize (https://github.com/hypertidy/fasterize; moved from
+    ~ecohealthalliance/fasterize~ in March 2025): the cell-centre rule and the pixel
+    functions that approx mode and a later materialize follow.
   - rusterize (https://github.com/ttrotto/rusterize): prior art for scanline
     rasterization in Rust.
   - GDAL rasterize: the cell-centre oracle for approx mode (through rasterio).
