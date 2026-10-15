@@ -63,3 +63,15 @@ fn hole_spanning_two_components_cells() {
     assert!(one_record_per_cell(&r));
     assert!((covered_area(&r, &g) - (16.0 - 4.0 + 16.0)).abs() < 1e-9);
 }
+
+#[test]
+fn approx_adjacent_components_give_one_record_per_cell() {
+    let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
+    let mp = MultiPolygon::new(vec![
+        poly(&[(1.0, 1.0), (5.0, 1.0), (5.0, 5.0), (1.0, 5.0), (1.0, 1.0)], &[]),
+        poly(&[(5.0, 1.0), (9.0, 1.0), (9.0, 5.0), (5.0, 5.0), (5.0, 1.0)], &[]),
+    ]);
+    let r = Burner::new(Mode::Approx).burn(&g, [(GeomId(0), &mp)]).expect("burn");
+    assert!(one_record_per_cell(&r));
+    assert!((covered_area(&r, &g) - 32.0).abs() < 1e-9);
+}

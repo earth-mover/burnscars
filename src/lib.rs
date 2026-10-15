@@ -22,6 +22,7 @@
 //! - Two geometries can cover the same cell, so the full object is a sparse
 //!   `(row, col, id)` tensor. One geometry has at most one record per cell.
 
+mod approx;
 mod burner;
 mod coverage;
 mod error;

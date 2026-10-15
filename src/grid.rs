@@ -162,12 +162,10 @@ impl Lattice {
         self.y0 - to_f64(row) * self.dy
     }
     /// Column centre, controlledburn formula `xmin + (col + 0.5) * dx`.
-    #[expect(dead_code, reason = "first used by a later task")]
     pub(crate) fn x_mid(&self, col: i64) -> f64 {
         self.x0 + (to_f64(col) + 0.5) * self.dx
     }
     /// Row centre, controlledburn formula `ymax - (r + 0.5) * dy`.
-    #[expect(dead_code, reason = "first used by a later task")]
     pub(crate) fn y_mid(&self, row: i64) -> f64 {
         self.y0 - (to_f64(row) + 0.5) * self.dy
     }

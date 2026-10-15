@@ -1,5 +1,6 @@
 //! Per-worker buffers, reused across geometries (spec: Storage, O6).
 
+use crate::approx::Icpt;
 use crate::coverage::{CoverageScratch, walk::Arena};
 use crate::geom::coord::Coord;
 use crate::input::InputBuf;
@@ -15,4 +16,5 @@ pub(crate) struct Scratch {
     pub(crate) input: InputBuf,
     pub(crate) walk: WalkScratch,
     pub(crate) cov: CoverageScratch,
+    pub(crate) icpt: Vec<Icpt>,
 }

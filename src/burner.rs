@@ -2,6 +2,7 @@
 
 use geo_traits::GeometryTrait;
 
+use crate::approx;
 use crate::coverage;
 use crate::error::BurnError;
 use crate::grid::{GeomId, Grid};
@@ -78,9 +79,7 @@ impl Burner {
             Loaded::Empty => {}
             Loaded::Polygons => match self.mode {
                 Mode::Coverage => coverage::burn(&s.input, grid, id, &mut s.walk, &mut s.cov, out)?,
-                Mode::Approx => {
-                    return Err(BurnError::Internal { id, detail: "approx path lands in Task 9" });
-                }
+                Mode::Approx => approx::burn(&s.input, grid, id, &mut s.icpt, out)?,
             },
             Loaded::Lines => {
                 return Err(BurnError::Internal { id, detail: "line path lands in Task 10" });
