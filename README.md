@@ -30,7 +30,7 @@ geometry or by grid chunk and run it in parallel.
 - If controlledburn and exactextract disagree, exactextract wins. The oracle suite
   decides.
 - No code comes from GEOS or JTS. GEOS is used only as a black-box test oracle
-  (shapely, in `oracle/`).
+  (through shapely, in `oracle/`).
 
 ## Output
 
@@ -53,6 +53,10 @@ relation to CSR and CSC sparse matrices.
 - R3: prepared geometry: row-bucketed edges in a `Sync` struct, shared with `Arc`
   across brix chunks, so each chunk scans only its row band.
 - R4: pre-clip each ring to the window, for very large polygons on small chunks.
+- Exact predicates: use `robust` (Shewchuk `orient2d`) for the ring orientation and the
+  side tests, in place of float arithmetic. exactextract does not do this, so the
+  oracle fixtures can change on near-degenerate input. Decide which result is correct
+  before the change, and record each changed fixture as a deliberate difference.
 - Merge adjacent one-cell runs and interior runs in a row.
 - A performance regression gate on the benchmarks.
 - Antimeridian, as an opt-in `Wrap::Longitude` lattice option. Conventions: A, split

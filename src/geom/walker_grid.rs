@@ -24,7 +24,8 @@ pub(crate) struct WalkerGrid {
 }
 
 impl WalkerGrid {
-    /// exactextract `processing_region` + `get_geometry_grid` (`src/raster_cell_intersection.cpp`)
+    /// exactextract `processing_region` ([src/raster_cell_intersection.cpp#L56](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp#L56)) +
+    /// `get_geometry_grid` ([src/raster_cell_intersection.cpp#L81](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp#L81))
     /// on the lattice, with a one-cell margin in place of `Grid::shrink_to_fit` fixes.
     pub(crate) fn for_envelope(grid: &Grid, env: &Envelope) -> Option<Self> {
         let (wr, wc) = (grid.rows(), grid.cols());
@@ -65,6 +66,7 @@ impl WalkerGrid {
     }
 
     /// Spec walker rule 2: one formula, closed edges only at the full-grid edge.
+    /// From exactextract `Grid::get_row` ([src/grid.h#L85](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L85)).
     pub(crate) fn local_row_of(&self, y: f64) -> LocalRow {
         let n = self.n_rows();
         LocalRow(match self.grid.row_of(y) {
@@ -74,6 +76,7 @@ impl WalkerGrid {
         })
     }
 
+    /// From exactextract `Grid::get_column` ([src/grid.h#L60](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L60)).
     pub(crate) fn local_col_of(&self, x: f64) -> LocalCol {
         let n = self.n_cols();
         LocalCol(match self.grid.col_of(x) {
@@ -83,8 +86,8 @@ impl WalkerGrid {
         })
     }
 
-    /// exactextract `grid_cell(const Grid<infinite_extent>&, ...)` (src/grid.cpp) with
-    /// lattice edges; padding boxes reach `f64::MIN` / `f64::MAX`.
+    /// exactextract `grid_cell(const Grid<infinite_extent>&, ...)`
+    /// ([src/grid.cpp#L35](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.cpp#L35)) with lattice edges; padding boxes reach `f64::MIN` / `f64::MAX`.
     pub(crate) fn cell_box(&self, r: LocalRow, c: LocalCol) -> CellBox {
         let l = self.grid.lattice();
         let (c0, r0) = (i64::from(self.cols.start().0), i64::from(self.rows.start().0));
@@ -113,7 +116,7 @@ impl WalkerGrid {
             .map(|k| Col(self.cols.start().0 + k))
     }
 
-    /// controlledburn `walk_polyline` move; `None` if the walk leaves the padding ring.
+    /// controlledburn `walk_polyline` move ([cpp/src/scanline.cpp#L184](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L184)); `None` if the walk leaves the padding ring.
     pub(crate) fn step(
         &self,
         r: LocalRow,
@@ -129,7 +132,7 @@ impl WalkerGrid {
         }
     }
 
-    /// controlledburn `snap_to_lattice` (cpp/src/scanline.cpp) on the global lattice.
+    /// controlledburn `snap_to_lattice` ([cpp/src/scanline.cpp#L158](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L158)) on the global lattice.
     /// No range test: the subgrid range made tiles disagree (spec walker rule 1).
     pub(crate) fn snap(&self, c: Coord) -> Coord {
         let l = self.grid.lattice();

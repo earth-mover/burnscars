@@ -22,7 +22,8 @@ pub(crate) fn perimeter_distance(b: &CellBox, c: Coord) -> Option<f64> {
     }
 }
 
-/// Port of exactextract `perimeter_distance_ccw`.
+/// Port of exactextract `perimeter_distance_ccw`
+/// ([src/perimeter_distance.cpp#L59](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/perimeter_distance.cpp#L59)).
 pub(crate) fn perimeter_distance_ccw(measure1: f64, measure2: f64, perimeter: f64) -> f64 {
     if measure2 <= measure1 { measure1 - measure2 } else { perimeter + measure1 - measure2 }
 }

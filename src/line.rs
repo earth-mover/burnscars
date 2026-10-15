@@ -5,6 +5,7 @@
 //! One record per cell for all parts follows exactextract `add_ring_results`
 //! (Apache-2.0, Copyright 2018-2022 ISciences, LLC), commit
 //! 67969d99d1dfe1115be955087e2c48e1aab133e2, `src/raster_cell_intersection.cpp`.
+//! `add_ring_results`: <https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp#L479>
 
 use crate::coverage::{fraction::to_f32, walk::walk};
 use crate::error::At;

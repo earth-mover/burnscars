@@ -103,7 +103,8 @@ pub(crate) fn analytical_fraction(b: &CellBox, coords: &[Coord]) -> Option<f64> 
     Some(area_signed_ee(poly).abs() / cell_area)
 }
 
-/// Port of controlledburn `closed_ring_covered_fraction`.
+/// Port of controlledburn `closed_ring_covered_fraction`
+/// ([cpp/src/ee/analytical_coverage.h#L164](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/ee/analytical_coverage.h#L164)).
 pub(crate) fn closed_ring_fraction(b: &CellBox, coords: &[Coord]) -> f64 {
     let cell_area = b.area();
     if cell_area <= 0.0 {
@@ -175,7 +176,7 @@ pub(crate) fn left_hand_area(
     Some(sum)
 }
 
-/// Port of exactextract `next_chain` (`src/traversal_areas.cpp`).
+/// Port of exactextract `next_chain` ([src/traversal_areas.cpp#L48](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/traversal_areas.cpp#L48)).
 fn next_chain(chains: &[Chain], cur: usize, kill: usize, perim: f64) -> Option<usize> {
     let stop = chains.get(cur)?.stop;
     let mut best = None;
@@ -216,7 +217,7 @@ mod tests {
         left_hand_area(&b10(), &coords, &ranges, &mut Vec::new(), &mut Vec::new())
     }
 
-    /// Test only: controlledburn `polygon_signed_area` as an index loop over a slice.
+    /// Test only: controlledburn `polygon_signed_area` ([cpp/src/ee/analytical_coverage.h#L31](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/ee/analytical_coverage.h#L31)) as an index loop.
     fn area_signed_reference(ring: &[Coord]) -> f64 {
         if ring.len() < 3 {
             return 0.0;
@@ -229,7 +230,7 @@ mod tests {
         sum / 2.0
     }
 
-    /// Test only: controlledburn `analytical_covered_fraction` as written in C++, with a Vec.
+    /// Test only: controlledburn `analytical_covered_fraction` ([cpp/src/ee/analytical_coverage.h#L58](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/ee/analytical_coverage.h#L58)) with a Vec.
     fn analytical_fraction_reference(b: &CellBox, coords: &[Coord]) -> Option<f64> {
         let cell_area = b.area();
         if cell_area <= 0.0 || coords.len() < 2 {

@@ -7,9 +7,9 @@
 //! (all components) replaces controlledburn's sweep per component.
 
 use crate::error::BurnError;
-use crate::grid::{Col, GeomId, Grid, Span};
+use crate::grid::{Col, GeomId, Grid, Pos, Span, to_f64};
 use crate::input::InputBuf;
-use crate::output::BurnResult;
+use crate::output::{BurnResult, Emit};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Icpt {
@@ -24,9 +24,6 @@ pub(crate) struct ApproxState {
     winding: i32,
     run_start: Option<u32>,
 }
-
-use crate::grid::{Pos, to_f64};
-use crate::output::Emit;
 
 /// One intercept of the controlledburn approx sweep. Left of centre is `x <= x_mid`.
 pub(crate) fn step(st: &mut ApproxState, ix: &Icpt, grid: &Grid) -> Option<Span<Col>> {
@@ -76,6 +73,7 @@ pub(crate) fn burn(
     };
     let l = *grid.lattice();
     let (wr, wc) = (grid.rows(), grid.cols());
+    // Deliberate difference (spec table): x pre-test against the window columns (R8).
     if env.xmax < l.x_edge(i64::from(wc.start().0)) || env.xmin > l.x_edge(i64::from(wc.end().0)) {
         return Ok(());
     }

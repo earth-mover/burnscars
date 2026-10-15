@@ -3,6 +3,10 @@
 //! From controlledburn (Apache-2.0, Copyright 2025 Michael Sumner), commit
 //! 1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558, `cpp/src/scanline.cpp` (`process_point`),
 //! with exactextract `Grid::get_row` / `get_column` edge rules at the full-grid edges.
+//!
+//! - controlledburn `process_point`: <https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L884>
+//! - exactextract `get_column`: <https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L60>
+//! - exactextract `get_row`: <https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L85>
 
 use crate::grid::Pos;
 use crate::grid::{GeomId, Grid};

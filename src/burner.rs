@@ -20,7 +20,7 @@ pub enum Mode {
     Approx,
 }
 
-/// One per worker. `Send`, not `Sync`. Owns the scratch buffers and reuses them.
+/// `Send` and `Sync`; use one per worker, because it owns reused scratch buffers.
 #[derive(Debug)]
 pub struct Burner {
     mode: Mode,

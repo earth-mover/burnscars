@@ -15,6 +15,7 @@ pub(crate) struct CellBox {
     pub(crate) ymax: f64,
 }
 
+/// controlledburn `Location` ([cpp/src/scanline.cpp#L99](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L99)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Location {
     Inside,
@@ -35,12 +36,13 @@ impl CellBox {
         self.width() * self.height()
     }
 
-    /// Port of exactextract `Box::perimeter`: `2 * width() + 2 * height()`.
+    /// Port of exactextract `Box::perimeter` ([src/box.h#L69](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/box.h#L69)):
+    /// `2 * width() + 2 * height()`.
     pub(crate) fn perimeter(&self) -> f64 {
         2.0 * self.width() + 2.0 * self.height()
     }
 
-    /// Port of exactextract `Box::side` (src/box.cpp).
+    /// Port of exactextract `Box::side` ([src/box.cpp#L28](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/box.cpp#L28)).
     pub(crate) fn side(&self, c: Coord) -> Option<Side> {
         if c.x == self.xmin {
             Some(Side::Left)
@@ -55,17 +57,18 @@ impl CellBox {
         }
     }
 
-    /// Port of exactextract `Box::contains(const Coordinate&)`.
+    /// Port of exactextract `Box::contains(const Coordinate&)`
+    /// ([src/box.cpp#L127](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/box.cpp#L127)).
     pub(crate) fn contains(&self, c: Coord) -> bool {
         c.x >= self.xmin && c.x <= self.xmax && c.y >= self.ymin && c.y <= self.ymax
     }
 
-    /// Port of exactextract `Box::strictly_contains`.
+    /// Port of exactextract `Box::strictly_contains` ([src/box.cpp#L133](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/box.cpp#L133)).
     pub(crate) fn strictly_contains(&self, c: Coord) -> bool {
         c.x > self.xmin && c.x < self.xmax && c.y > self.ymin && c.y < self.ymax
     }
 
-    /// controlledburn `point_location` (cpp/src/scanline.cpp).
+    /// controlledburn `point_location` ([cpp/src/scanline.cpp#L102](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L102)).
     pub(crate) fn location(&self, c: Coord) -> Location {
         if self.strictly_contains(c) {
             Location::Inside
@@ -145,7 +148,7 @@ impl CellBox {
     }
 }
 
-/// exactextract `clamp` (src/box.cpp): `min(max(x, low), high)`, not `f64::clamp`.
+/// exactextract `clamp` ([src/box.cpp#L22](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/box.cpp#L22)): `min(max(x, low), high)`, not `f64::clamp`.
 /// Uses the `std::max` / `std::min` comparisons, so signed zero and NaN match C++.
 pub(crate) fn clamp(x: f64, low: f64, high: f64) -> f64 {
     let m = if x < low { low } else { x };

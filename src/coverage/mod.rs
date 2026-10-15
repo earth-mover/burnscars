@@ -6,6 +6,9 @@
 //! exactextract `RasterCellIntersection::process` (Apache-2.0, Copyright 2018-2022
 //! ISciences, LLC), commit 67969d99d1dfe1115be955087e2c48e1aab133e2,
 //! `src/raster_cell_intersection.cpp`.
+//!
+//! - controlledburn `process_polygon`: <https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L554>
+//! - exactextract `RasterCellIntersection::process`: <https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp#L133>
 
 pub(crate) mod fraction;
 pub(crate) mod sweep;

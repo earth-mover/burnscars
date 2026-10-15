@@ -70,7 +70,7 @@ impl<T: Copy + Ord + Into<u32>> Span<T> {
     }
     #[must_use]
     pub fn width(&self) -> u32 {
-        self.end.into() - self.start.into()
+        self.end.into().saturating_sub(self.start.into())
     }
     #[must_use]
     pub fn contains(&self, t: T) -> bool {
@@ -194,7 +194,7 @@ impl Grid {
         }
         Ok(Self { lattice, full_rows: rows, full_cols: cols, rows, cols })
     }
-    /// Same meaning as controlledburn `GridSpec`: x0 = xmin, y0 = ymax,
+    /// Same meaning as controlledburn `GridSpec` ([cpp/include/controlledburn/burn.hpp#L40](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/include/controlledburn/burn.hpp#L40)): x0 = xmin, y0 = ymax,
     /// dx = (xmax - xmin) / ncol, dy = (ymax - ymin) / nrow.
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn from_extent(
@@ -253,8 +253,9 @@ impl Grid {
     pub fn full_cols(&self) -> Span<Col> {
         self.full_cols
     }
-    /// exactextract `Grid<infinite_extent>::get_column` on the lattice; padding is
-    /// `Before` / `After`. The cell edges are the authority.
+    /// exactextract `Grid<infinite_extent>::get_column`
+    /// ([src/grid.h#L60](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L60)) on the lattice;
+    /// padding is `Before` / `After`. The cell edges are the authority.
     #[must_use]
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn col_of(&self, x: f64) -> Pos<Col> {
@@ -280,8 +281,9 @@ impl Grid {
         Pos::In(Col(to_u32(c)))
     }
 
-    /// exactextract `Grid<infinite_extent>::get_row` on the lattice. Cell r is
-    /// `y_edge(r + 1) < y <= y_edge(r)`.
+    /// exactextract `Grid<infinite_extent>::get_row`
+    /// ([src/grid.h#L85](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L85)) on the lattice.
+    /// Cell r is `y_edge(r + 1) < y <= y_edge(r)`.
     #[must_use]
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn row_of(&self, y: f64) -> Pos<Row> {

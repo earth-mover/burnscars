@@ -21,6 +21,8 @@ pub(crate) enum Valid {
     ClosedInCell,
 }
 
+/// One traversal of one cell. From controlledburn `LightTraversal`
+/// ([cpp/src/scanline.cpp#L68](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L68)).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Trav {
     pub(crate) row: LocalRow,
@@ -36,7 +38,7 @@ impl Trav {
     pub(crate) fn range(&self) -> Range<usize> {
         self.start..self.start + self.len
     }
-    /// controlledburn `walk_ring` filter: traversed with > 1 unique coordinate, or a
+    /// controlledburn `walk_ring` filter ([cpp/src/scanline.cpp#L338](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L338)): traversed with > 1 unique coordinate, or a
     /// closed ring with no entry.
     pub(crate) fn classify(&self, arena: &[Coord]) -> Option<Valid> {
         let cs = arena.get(self.range())?;
@@ -81,7 +83,7 @@ impl WalkError {
     }
 }
 
-/// controlledburn rounding guard in `walk_polyline` (cpp/src/scanline.cpp): a crossing
+/// controlledburn rounding guard in `walk_polyline` ([cpp/src/scanline.cpp#L240](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L240)): a crossing
 /// further than `next` is replaced by `next` clamped onto the box.
 pub(crate) fn rounding_guard(bx: &CellBox, from: Coord, next: Coord, x: Crossing) -> Crossing {
     let (dxn, dyn_) = (next.x - from.x, next.y - from.y);
@@ -118,7 +120,8 @@ pub(crate) fn walk(
         return Ok(());
     };
     let n_input = coords.len();
-    // Bound on cell visits, so bad arithmetic cannot loop forever.
+    // Deliberate difference (spec table): a bound on cell visits. C++ would loop forever;
+    // here the walk returns `Diverged`.
     let max_visits =
         n_input.saturating_add(64).saturating_mul(wg.n_rows() + wg.n_cols() + 4).saturating_mul(2);
     let mut visits = 0_usize;
@@ -208,7 +211,8 @@ pub(crate) fn walk(
         if let Some(side) = exit {
             match wg.step(row, col, side) {
                 Some(rc) => (row, col) = rc,
-                // C++ ends the loop when input is spent; only unspent input is an error.
+                // Deliberate difference (spec table): C++ increments and stops; here the walk
+                // ends without error after the last input. Unspent input is an error.
                 None if pos >= coords.len() && last_exit.is_none() => return Ok(()),
                 None => return Err(WalkError::Internal("walk left the walker grid")),
             }

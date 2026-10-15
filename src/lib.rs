@@ -21,6 +21,25 @@
 //! - `to_row_major()` builds the CSR index (`row_ptr`).
 //! - Two geometries can cover the same cell, so the full object is a sparse
 //!   `(row, col, id)` tensor. One geometry has at most one record per cell.
+//!
+//! Input must be valid OGC geometry. The fill rule is nonzero winding.
+//!
+//! # Example
+//!
+//! ```
+//! use burnscars::{Burner, GeomId, Grid, Mode};
+//! use geo_types::polygon;
+//!
+//! // A 4 x 4 grid over [0, 4] x [0, 4], and a square that covers 2 x 2 cells.
+//! let grid = Grid::from_extent(0.0, 0.0, 4.0, 4.0, 4, 4)?;
+//! let square = polygon![(x: 1.0, y: 1.0), (x: 3.0, y: 1.0), (x: 3.0, y: 3.0), (x: 1.0, y: 3.0)];
+//! let out = Burner::new(Mode::Coverage).burn(&grid, [(GeomId(0), &square)])?;
+//! // Full cells are in runs. Partial cells are in edges. Here all 4 cells are full.
+//! let edge_cells = out.edges.iter().count();
+//! let run_cells: u32 = out.runs.iter().map(|r| r.cols.width()).sum();
+//! assert_eq!(edge_cells + run_cells as usize, 4);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 mod approx;
 mod burner;

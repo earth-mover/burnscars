@@ -163,6 +163,20 @@ pub(crate) enum Emit {
     Point { row: Row, col: Col },
 }
 
+/// The result of a burn: the sparse coverage matrix `A[cell, geometry]`.
+///
+/// The value is the fraction of the cell that the geometry covers (1 for interior cells).
+/// Zonal statistics are `(Aᵀv) / (Aᵀ1)` for a raster `v`.
+///
+/// - `runs` is a run-length layer: one interval of columns in one row, all with value 1
+///   ("RLE-CSR").
+/// - `edges` is COO: explicit `(row, col, value)` triples.
+/// - The burn order is geometry-major, so `geom_ptr` is a CSC index with the geometry
+///   as the column.
+/// - `to_row_major()` builds the CSR index.
+///
+/// Two geometries can cover the same cell, so the full object is a sparse `(row, col, id)`
+/// tensor. One geometry has at most one record per cell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BurnResult {
     pub runs: Runs,

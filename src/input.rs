@@ -218,6 +218,7 @@ impl InputBuf {
             return Err(BurnError::ShortRing { at, n: range.len() });
         }
         let ring = &mut self.coords[range.clone()];
+        // Orientation as controlledburn `signed_area`: https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp#L42
         let area = signed_area_ccw(ring);
         if area.is_nan() || area <= 0.0 {
             ring.reverse();
