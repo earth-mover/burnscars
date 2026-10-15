@@ -9,3 +9,4 @@ pub(crate) mod crossing;
 pub(crate) mod measures;
 pub(crate) mod perimeter;
 pub(crate) mod side;
+pub(crate) mod walker_grid;

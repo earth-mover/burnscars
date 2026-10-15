@@ -147,7 +147,7 @@ impl CellBox {
 
 /// exactextract `clamp` (src/box.cpp): `min(max(x, low), high)`, not `f64::clamp`.
 /// Uses the `std::max` / `std::min` comparisons, so signed zero and NaN match C++.
-fn clamp(x: f64, low: f64, high: f64) -> f64 {
+pub(crate) fn clamp(x: f64, low: f64, high: f64) -> f64 {
     let m = if x < low { low } else { x };
     if high < m { high } else { m }
 }
