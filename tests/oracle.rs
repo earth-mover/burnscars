@@ -2,10 +2,10 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use burnscars::{BurnResult, Burner, GeomId, Grid, Mode};
-use common::{hex, known_diffs, read_csv};
+use common::{hex, known_diff_cells, read_csv};
 
 const CASES: &str = include_str!("../fixtures/oracle/cases.csv");
 const COVERAGE: &str = include_str!("../fixtures/oracle/coverage.csv");
@@ -62,23 +62,41 @@ fn oracle_cells(rows: &[Vec<String>], case: &str) -> BTreeMap<(u32, u32), f64> {
         .collect()
 }
 
-fn compare(table: &str, mode: Mode, oracle: &str) {
-    let skip = known_diffs(table);
-    let cases = read_csv(CASES);
+/// Cells where burnscars and the oracle disagree: a key on one side only, or |Δf| > TOL.
+fn diff_cells(
+    got: &BTreeMap<(u32, u32), f64>,
+    want: &BTreeMap<(u32, u32), f64>,
+) -> BTreeSet<(u32, u32)> {
+    let keys: BTreeSet<(u32, u32)> = got.keys().chain(want.keys()).copied().collect();
+    keys.into_iter()
+        .filter(|k| match (got.get(k), want.get(k)) {
+            (Some(a), Some(b)) => (a - b).abs() > TOL,
+            _ => true,
+        })
+        .collect()
+}
+
+/// Case names whose difference set is not the listed one (empty if not listed).
+fn mismatches(table: &str, mode: Mode, cases: &str, oracle: &str) -> Vec<String> {
+    let known = known_diff_cells(table);
     let rows = read_csv(oracle);
     let mut failures = Vec::new();
-    for case in &cases[1..] {
-        if skip.iter().any(|(c, _)| *c == case[0]) {
-            continue;
-        }
+    for case in &read_csv(cases)[1..] {
         let got = cells(&burn(case, mode));
         let want = oracle_cells(&rows[1..], &case[0]);
-        let keys_equal = got.keys().eq(want.keys());
-        let values_close = got.iter().zip(&want).all(|((_, a), (_, b))| (a - b).abs() <= TOL);
-        if !(keys_equal && values_close) {
+        let diff = diff_cells(&got, &want);
+        if known.get(&case[0]).map_or(!diff.is_empty(), |listed| *listed != diff) {
+            // Print in the known_diffs.toml form, for review.
+            let list: Vec<String> = diff.iter().map(|(r, c)| format!("[{r}, {c}]")).collect();
+            eprintln!("{table} {}: cells = [{}]", case[0], list.join(", "));
             failures.push(case[0].clone());
         }
     }
+    failures
+}
+
+fn compare(table: &str, mode: Mode, oracle: &str) {
+    let failures = mismatches(table, mode, CASES, oracle);
     assert!(failures.is_empty(), "{table} differs from the oracle for: {failures:?}");
 }
 
@@ -106,17 +124,6 @@ fn fuzz_against_live_oracle() {
     assert!(status.success());
     let cases = std::fs::read_to_string(dir.join("cases.csv")).expect("cases");
     let cov = std::fs::read_to_string(dir.join("coverage.csv")).expect("coverage");
-    let rows = read_csv(&cov);
-    // Same seed as the fixtures, so the known exactextract errors come back.
-    let skip = known_diffs("coverage");
-    for case in read_csv(&cases).iter().skip(1).filter(|c| !skip.iter().any(|(s, _)| *s == c[0])) {
-        let got = cells(&burn(case, Mode::Coverage));
-        let want = oracle_cells(&rows[1..], &case[0]);
-        assert!(got.keys().eq(want.keys()), "{}: cell sets differ", case[0]);
-        assert!(
-            got.iter().zip(&want).all(|((_, a), (_, b))| (a - b).abs() <= TOL),
-            "{}: fractions differ",
-            case[0]
-        );
-    }
+    let failures = mismatches("coverage", Mode::Coverage, &cases, &cov);
+    assert!(failures.is_empty(), "coverage differs from the live oracle for: {failures:?}");
 }

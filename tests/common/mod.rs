@@ -1,7 +1,7 @@
 //! Test-only helpers shared by the integration tests.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use burnscars::{BurnResult, Grid};
 use geo_types::{LineString, Polygon, coord};
@@ -78,30 +78,75 @@ pub(crate) fn hex(s: &str) -> Vec<u8> {
     (0..s.len() / 2).filter_map(|i| u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()).collect()
 }
 
-/// `[[diff]]` entries of `oracle/known_diffs.toml` for `table`, as (case, reason).
-/// A missing or bad file, or an entry with no `table`, `case` or `reason`, fails the test.
+const KNOWN_DIFFS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/oracle/known_diffs.toml");
+
+/// All `[[diff]]` entries of `oracle/known_diffs.toml`. A missing or bad file fails the test.
 #[expect(clippy::panic, reason = "test helper: a bad known_diffs.toml is a test bug")]
-pub(crate) fn known_diffs(table: &str) -> Vec<(String, String)> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/oracle/known_diffs.toml");
+fn diff_entries() -> Vec<toml::Value> {
+    let path = KNOWN_DIFFS;
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
     let doc: toml::Table = text.parse().unwrap_or_else(|e| panic!("cannot parse {path}: {e}"));
-    let entries = match doc.get("diff") {
-        None => return Vec::new(),
-        Some(v) => {
-            v.as_array().unwrap_or_else(|| panic!("{path}: `diff` is not an array of tables"))
-        }
-    };
-    let field = |d: &toml::Value, k: &str| -> String {
-        match d.get(k).and_then(toml::Value::as_str) {
-            Some(s) if !s.trim().is_empty() => s.to_owned(),
-            _ => panic!("{path}: a [[diff]] entry has no `{k}`: {d}"),
-        }
-    };
-    entries
+    match doc.get("diff") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .unwrap_or_else(|| panic!("{path}: `diff` is not an array of tables"))
+            .clone(),
+    }
+}
+
+/// A non-blank string field of a `[[diff]]` entry.
+#[expect(clippy::panic, reason = "test helper: a bad known_diffs.toml is a test bug")]
+fn diff_field(d: &toml::Value, k: &str) -> String {
+    match d.get(k).and_then(toml::Value::as_str) {
+        Some(s) if !s.trim().is_empty() => s.to_owned(),
+        _ => panic!("{KNOWN_DIFFS}: a [[diff]] entry has no `{k}`: {d}"),
+    }
+}
+
+/// Whole-case `[[diff]]` entries for `table`, as (case, reason). Each entry needs a
+/// `table`, a `case` and a `reason`.
+pub(crate) fn known_diffs(table: &str) -> Vec<(String, String)> {
+    diff_entries()
         .iter()
         .filter_map(|d| {
-            let (t, case, reason) = (field(d, "table"), field(d, "case"), field(d, "reason"));
+            let (t, case, reason) =
+                (diff_field(d, "table"), diff_field(d, "case"), diff_field(d, "reason"));
             (t == table).then_some((case, reason))
         })
         .collect()
+}
+
+/// Per-cell `[[diff]]` entries for `table`: case -> the exact set of differing (row, col).
+/// An entry for `table` with no `cells` list, or a case listed two times, fails the test.
+#[expect(clippy::panic, reason = "test helper: a bad known_diffs.toml is a test bug")]
+pub(crate) fn known_diff_cells(table: &str) -> BTreeMap<String, BTreeSet<(u32, u32)>> {
+    // Checks `table`, `case` and `reason` of all entries.
+    let _ = known_diffs(table);
+    let mut out = BTreeMap::new();
+    for d in diff_entries().iter().filter(|d| diff_field(d, "table") == table) {
+        let case = diff_field(d, "case");
+        let cells = d
+            .get("cells")
+            .and_then(toml::Value::as_array)
+            .unwrap_or_else(|| panic!("{KNOWN_DIFFS}: {table}/{case} has no `cells` list"));
+        let set: BTreeSet<(u32, u32)> = cells
+            .iter()
+            .map(|rc| {
+                let n = |i: usize| {
+                    rc.get(i)
+                        .and_then(toml::Value::as_integer)
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or_else(|| panic!("{KNOWN_DIFFS}: {table}/{case}: bad cell {rc}"))
+                };
+                (n(0), n(1))
+            })
+            .collect();
+        assert!(!set.is_empty(), "{KNOWN_DIFFS}: {table}/{case}: `cells` is empty");
+        assert!(
+            out.insert(case.clone(), set).is_none(),
+            "{KNOWN_DIFFS}: {table}/{case} is listed two times"
+        );
+    }
+    out
 }
