@@ -146,8 +146,10 @@ impl CellBox {
 }
 
 /// exactextract `clamp` (src/box.cpp): `min(max(x, low), high)`, not `f64::clamp`.
+/// Uses the `std::max` / `std::min` comparisons, so signed zero and NaN match C++.
 fn clamp(x: f64, low: f64, high: f64) -> f64 {
-    x.max(low).min(high)
+    let m = if x < low { low } else { x };
+    if high < m { high } else { m }
 }
 
 #[cfg(test)]
@@ -211,6 +213,15 @@ mod tests {
             assert_eq!(c.side, side, "to ({x2}, {y2})");
             assert!(near(c.coord, ex, ey), "to ({x2}, {y2}): {:?}", c.coord);
         }
+    }
+
+    // C++ `std::min(std::max(x, low), high)` keeps x for -0.0 and NaN.
+    #[test]
+    fn clamp_matches_cpp_for_signed_zero_and_nan() {
+        assert_eq!(clamp(-0.0, 0.0, 1.0).to_bits(), (-0.0_f64).to_bits());
+        assert!(clamp(f64::NAN, 0.0, 1.0).is_nan());
+        assert_eq!(clamp(2.0, 0.0, 1.0), 1.0);
+        assert_eq!(clamp(-2.0, 0.0, 1.0), 0.0);
     }
 
     #[test]
