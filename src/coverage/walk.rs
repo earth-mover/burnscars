@@ -208,8 +208,12 @@ pub(crate) fn walk(
         arena.next_seq = arena.next_seq.wrapping_add(1);
 
         if let Some(side) = exit {
-            (row, col) =
-                wg.step(row, col, side).ok_or(WalkError::Internal("walk left the walker grid"))?;
+            match wg.step(row, col, side) {
+                Some(rc) => (row, col) = rc,
+                // C++ ends the loop when input is spent; only unspent input is an error.
+                None if pos >= coords.len() && last_exit.is_none() => return Ok(()),
+                None => return Err(WalkError::Internal("walk left the walker grid")),
+            }
         }
     }
     Ok(())
@@ -287,6 +291,16 @@ mod tests {
         assert_eq!(g.coord, Coord::new(0.3, 0.5));
         let ok = Crossing { side: Side::Right, coord: Coord::new(0.3, 0.5) };
         assert_eq!(rounding_guard(&bx, from, next, ok), ok);
+    }
+
+    // a line that ends on a padding wall at f64::MAX is not an error.
+    #[test]
+    fn line_ending_on_the_outer_wall_walks() {
+        let g = Grid::from_extent(0.0, 0.0, 3.0, 3.0, 3, 3).expect("grid");
+        let w = wg(&g, (0.5, 0.5, 1.5, 0.5));
+        let mut l = ring(&[(0.5, 0.5), (f64::MAX, 0.5)]);
+        let mut a = Arena::default();
+        assert_eq!(walk(&mut l, &w, false, &mut a), Ok(()));
     }
 
     #[test]

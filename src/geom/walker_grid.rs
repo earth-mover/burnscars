@@ -27,18 +27,9 @@ impl WalkerGrid {
     /// exactextract `processing_region` + `get_geometry_grid` (`src/raster_cell_intersection.cpp`)
     /// on the lattice, with a one-cell margin in place of `Grid::shrink_to_fit` fixes.
     pub(crate) fn for_envelope(grid: &Grid, env: &Envelope) -> Option<Self> {
-        let l = grid.lattice();
         let (wr, wc) = (grid.rows(), grid.cols());
         let (c0, c1) = (i64::from(wc.start().0), i64::from(wc.end().0));
         let (r0, r1) = (i64::from(wr.start().0), i64::from(wr.end().0));
-        // Closed intersection with the window: touching counts.
-        if env.xmax < l.x_edge(c0)
-            || env.xmin > l.x_edge(c1)
-            || env.ymin > l.y_edge(r0)
-            || env.ymax < l.y_edge(r1)
-        {
-            return None;
-        }
         let (fc, fr) = (grid.full_cols(), grid.full_rows());
         let ci = |p: Pos<Col>| match p {
             Pos::Before => i64::from(fc.start().0) - 1,
@@ -190,10 +181,17 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_envelope_is_not_empty_and_outside_is_none() {
+    fn degenerate_envelope_is_not_empty_and_outside_is_clamped_or_none() {
         assert!(WalkerGrid::for_envelope(&g10(), &env(1.0, 5.0, 9.0, 5.0)).is_some());
-        assert!(WalkerGrid::for_envelope(&g10(), &env(11.0, 1.0, 12.0, 2.0)).is_none());
-        assert!(WalkerGrid::for_envelope(&g10(), &env(1.0, -5.0, 2.0, -1.0)).is_none());
+        // Outside envelopes keep one edge cell: the empty test runs after margin and clamp.
+        let wg = WalkerGrid::for_envelope(&g10(), &env(11.0, 1.0, 12.0, 2.0)).expect("right");
+        assert_eq!(wg.cols.range(), 9..10);
+        let wg = WalkerGrid::for_envelope(&g10(), &env(1.0, -5.0, 2.0, -1.0)).expect("below");
+        assert_eq!(wg.rows.range(), 9..10);
+        let w = g10()
+            .window(Span::new(Row(0), Row(10)).expect("r"), Span::new(Col(5), Col(10)).expect("c"))
+            .expect("window");
+        assert!(WalkerGrid::for_envelope(&w, &env(0.5, 1.0, 1.5, 2.0)).is_none());
     }
 
     #[test]
