@@ -61,3 +61,5 @@ cast_precision_loss = "warn"
 geo-traits = { version = "0.3", features = ["geo-types"] }
 geo-types = "0.7.19"
 proptest = "1.12.0"
+toml = "1.1.8"
+wkb = "=0.9.2"

@@ -52,3 +52,47 @@ pub(crate) fn expanded(r: &BurnResult) -> BTreeMap<(u8, u32, u32, u32), Vec<u32>
     }
     m
 }
+
+/// Minimal CSV reader: comma separator, double-quoted fields, no escaped quotes.
+pub(crate) fn read_csv(text: &str) -> Vec<Vec<String>> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut fields = Vec::new();
+            let mut cur = String::new();
+            let mut quoted = false;
+            for ch in line.chars() {
+                match (ch, quoted) {
+                    ('"', _) => quoted = !quoted,
+                    (',', false) => fields.push(std::mem::take(&mut cur)),
+                    _ => cur.push(ch),
+                }
+            }
+            fields.push(cur);
+            fields
+        })
+        .collect()
+}
+
+pub(crate) fn hex(s: &str) -> Vec<u8> {
+    (0..s.len() / 2).filter_map(|i| u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()).collect()
+}
+
+pub(crate) fn known_diffs(table: &str) -> Vec<(String, String)> {
+    let text =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/oracle/known_diffs.toml"))
+            .unwrap_or_default();
+    let doc: toml::Table = text.parse().unwrap_or_default();
+    doc.get("diff")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            let t = d.get("table")?.as_str()?;
+            let case = d.get("case")?.as_str()?.to_owned();
+            let reason = d.get("reason")?.as_str()?.to_owned();
+            assert!(!reason.trim().is_empty(), "known diff {case} has no reason");
+            (t == table).then_some((case, reason))
+        })
+        .collect()
+}
