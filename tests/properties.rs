@@ -445,9 +445,10 @@ proptest! {
     })]
 
     /// A ring R and its complement (a box around R and the grid, with R as a hole) add up
-    /// to 1 in every cell, so to the grid area in total.
+    /// to 1 in every cell, so to the grid area in total. Each of the three rings (R alone,
+    /// the box, R as the hole) gets a random orientation: the fill must not depend on it.
     #[test]
-    fn ring_and_complement_sum_to_one((g, r) in ring()) {
+    fn ring_and_complement_sum_to_one((g, r) in ring(), flip in any::<[bool; 3]>()) {
         let e = g.ext;
         let (w, h) = (e.xmax - e.xmin, e.ymax - e.ymin);
         let lo_x = r.iter().map(|p| p.0).fold(e.xmin, f64::min) - w;
@@ -455,11 +456,15 @@ proptest! {
         let lo_y = r.iter().map(|p| p.1).fold(e.ymin, f64::min) - h;
         let hi_y = r.iter().map(|p| p.1).fold(e.ymax, f64::max) + h;
         let bx = vec![(lo_x, lo_y), (hi_x, lo_y), (hi_x, hi_y), (lo_x, hi_y), (lo_x, lo_y)];
-        let a = cover(&burn1(&r, &g, Mode::Coverage), &g);
-        let b = cover(&burn_holed(&bx, std::slice::from_ref(&r), &g, Mode::Coverage), &g);
+        let orient = |v: &[P], rev: bool| -> Vec<P> {
+            if rev { v.iter().rev().copied().collect() } else { v.to_vec() }
+        };
+        let (ring, shell, hole) = (orient(&r, flip[0]), orient(&bx, flip[1]), orient(&r, flip[2]));
+        let a = cover(&burn1(&ring, &g, Mode::Coverage), &g);
+        let b = cover(&burn_holed(&shell, std::slice::from_ref(&hole), &g, Mode::Coverage), &g);
         for (i, (x, y)) in a.iter().zip(&b).enumerate() {
             prop_assert!((x + y - 1.0).abs() <= 2e-6,
-                "cell {i}: ring {x} + complement {y} != 1\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
+                "cell {i}: ring {x} + complement {y} != 1 (flip {flip:?})\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
         }
     }
 
