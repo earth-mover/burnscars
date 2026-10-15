@@ -58,4 +58,6 @@ cast_possible_wrap = "warn"
 cast_precision_loss = "warn"
 
 [dev-dependencies]
+geo-traits = { version = "0.3", features = ["geo-types"] }
+geo-types = "0.7.19"
 proptest = "1.12.0"

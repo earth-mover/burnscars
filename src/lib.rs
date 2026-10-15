@@ -23,10 +23,14 @@
 //!   `(row, col, id)` tensor. One geometry has at most one record per cell.
 
 mod coverage;
+mod error;
 mod geom;
 mod grid;
+#[expect(dead_code, reason = "first used by Tasks 7-8")]
+mod input;
 mod output;
 
+pub use error::{At, BurnError, GeomKind};
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span};
 pub use output::{
     BurnResult, EdgeRef, Edges, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor,
