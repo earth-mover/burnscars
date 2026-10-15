@@ -51,6 +51,8 @@ pub(crate) struct CoverageScratch {
     lha: Vec<Coord>,
     acc: Vec<CellAcc>,
     ring_wind: Vec<i32>,
+    trav_tmp: Vec<Trav>,
+    counts: Vec<usize>,
 }
 
 /// controlledburn `process_polygon` ([cpp/src/scanline.cpp](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp)) for all rings of one
@@ -82,7 +84,7 @@ pub(crate) fn burn(
         let ring_no = u32::try_from(ring_idx).map_err(|_| internal("more than 2^32 rings"))?;
         let arena = &mut walk_s.arena;
         let travs = arena.travs.get_mut(mark..).ok_or_else(|| internal("arena mark"))?;
-        travs.sort_unstable_by_key(|t| (t.row, t.col, t.seq));
+        sort_travs(travs, &mut s.trav_tmp, &mut s.counts);
         for group in travs.chunk_by(|a, b| (a.row, a.col) == (b.row, b.col)) {
             if let Some(acc) =
                 cell_record(group, &arena.coords, &wg, ring.role, ring_no, s).map_err(internal)?
@@ -97,6 +99,26 @@ pub(crate) fn burn(
     s.ring_wind.resize(input.rings().count(), 0);
     sweep::emit(&s.acc, &mut s.ring_wind, &wg, id, out);
     Ok(())
+}
+
+/// Sorts by (row, col, seq). The walker pushes in `seq` order, so two stable counting
+/// passes (col, then row) over the ring's span give the same order in O(n + span).
+fn sort_travs(travs: &mut [Trav], tmp: &mut Vec<Trav>, counts: &mut Vec<usize>) {
+    if travs.len() < 64 {
+        travs.sort_unstable_by_key(|t| (t.row, t.col, t.seq));
+        return;
+    }
+    let span = |f: fn(&Trav) -> usize| {
+        let lo = travs.iter().map(f).min().unwrap_or(0);
+        let hi = travs.iter().map(f).max().unwrap_or(0);
+        (lo, hi - lo + 1)
+    };
+    let (c_lo, c_n) = span(|t| t.col.0);
+    let (r_lo, r_n) = span(|t| t.row.0);
+    tmp.clear();
+    tmp.extend_from_slice(travs);
+    crate::sort::counting_sort(travs, tmp, counts, c_n, |t| t.col.0 - c_lo);
+    crate::sort::counting_sort(tmp, travs, counts, r_n, |t| t.row.0 - r_lo);
 }
 
 /// One ring's coverage and winding for one cell (controlledburn `walk_ring`,

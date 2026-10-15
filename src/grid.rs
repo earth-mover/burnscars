@@ -117,6 +117,10 @@ pub struct Lattice {
     y0: f64,
     dx: f64,
     dy: f64,
+    /// 1 / dx and 1 / dy: the first guess of `col_of` / `row_of`, which the edge loops
+    /// then correct, so a rounding difference from a division cannot change the result.
+    inv_dx: f64,
+    inv_dy: f64,
 }
 
 #[expect(clippy::cast_precision_loss, reason = "lattice indices stay below 2^53")]
@@ -135,7 +139,7 @@ impl Lattice {
         if !(dx > 0.0 && dy > 0.0) {
             return Err(GridError::Resolution { dx, dy });
         }
-        Ok(Self { x0, y0, dx, dy })
+        Ok(Self { x0, y0, dx, dy, inv_dx: 1.0 / dx, inv_dy: 1.0 / dy })
     }
     #[must_use]
     pub fn x0(&self) -> f64 {
@@ -271,7 +275,7 @@ impl Grid {
         if x == right {
             return Pos::In(Col(to_u32(e - 1))); // closed far edge of the full grid
         }
-        let mut c = floor_clamped((x - l.x0) / l.dx, s, e - 1);
+        let mut c = floor_clamped((x - l.x0) * l.inv_dx, s, e - 1);
         while c > s && x < l.x_edge(c) {
             c -= 1;
         }
@@ -299,7 +303,7 @@ impl Grid {
         if y == bottom {
             return Pos::In(Row(to_u32(e - 1))); // closed far edge of the full grid
         }
-        let mut r = floor_clamped((l.y0 - y) / l.dy, s, e - 1);
+        let mut r = floor_clamped((l.y0 - y) * l.inv_dy, s, e - 1);
         while r > s && y > l.y_edge(r) {
             r -= 1;
         }

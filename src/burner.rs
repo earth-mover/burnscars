@@ -80,7 +80,7 @@ impl Burner {
             Loaded::Empty => {}
             Loaded::Polygons => match self.mode {
                 Mode::Coverage => coverage::burn(&s.input, grid, id, &mut s.walk, &mut s.cov, out)?,
-                Mode::Approx => approx::burn(&s.input, grid, id, &mut s.icpt, out)?,
+                Mode::Approx => approx::burn(&s.input, grid, id, &mut s.approx, out)?,
             },
             Loaded::Lines => line::burn(&s.input, grid, id, &mut s.walk, out)?,
             Loaded::Points => point::burn(&s.input, grid, id, out),

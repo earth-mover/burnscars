@@ -19,6 +19,14 @@ pub(crate) struct Icpt {
     pub(crate) seq: u32,
 }
 
+/// Reused buffers: intercepts as pushed, then bucketed by row.
+#[derive(Debug, Default)]
+pub(crate) struct ApproxScratch {
+    icpt: Vec<Icpt>,
+    by_row: Vec<Icpt>,
+    counts: Vec<usize>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ApproxState {
     winding: i32,
@@ -65,7 +73,7 @@ pub(crate) fn burn(
     input: &InputBuf,
     grid: &Grid,
     id: GeomId,
-    icpt: &mut Vec<Icpt>,
+    s: &mut ApproxScratch,
     out: &mut BurnResult,
 ) -> Result<(), BurnError> {
     let Some(env) = input.envelope() else {
@@ -91,7 +99,7 @@ pub(crate) fn burn(
         return Ok(());
     }
 
-    icpt.clear();
+    s.icpt.clear();
     let mut seq = 0_u32;
     let (y0, dy) = (l.y0(), l.dy());
     for ring in input.rings() {
@@ -116,17 +124,26 @@ pub(crate) fn burn(
                 let t = (l.y_mid(r) - p.y) * inv;
                 let row = u32::try_from(r)
                     .map_err(|_| BurnError::Internal { id, detail: "approx row" })?;
-                icpt.push(Icpt { row, x: p.x + t * (q.x - p.x), delta, seq });
+                s.icpt.push(Icpt { row, x: p.x + t * (q.x - p.x), delta, seq });
                 seq = seq.wrapping_add(1);
             }
         }
     }
-    icpt.sort_unstable_by(|a, b| {
-        a.row.cmp(&b.row).then(a.x.total_cmp(&b.x)).then(a.seq.cmp(&b.seq))
+    // Same order as one sort by (row, x, seq): bucket by row (stable, so seq order), then
+    // sort each row by (x, seq). O(n + rows) plus small sorts, not O(n log n).
+    let lo = u32::try_from(row_lo).map_err(|_| BurnError::Internal { id, detail: "approx row" })?;
+    let n_rows = usize::try_from(row_hi - row_lo + 1).unwrap_or(0);
+    s.by_row.clear();
+    s.by_row.extend_from_slice(&s.icpt);
+    crate::sort::counting_sort(&s.icpt, &mut s.by_row, &mut s.counts, n_rows, |i| {
+        (i.row - lo) as usize
     });
+    for row in s.by_row.chunk_by_mut(|a, b| a.row == b.row) {
+        row.sort_unstable_by(|a, b| a.x.total_cmp(&b.x).then(a.seq.cmp(&b.seq)));
+    }
 
     let c1 = wc.end().0;
-    for row_icpts in icpt.chunk_by(|a, b| a.row == b.row) {
+    for row_icpts in s.by_row.chunk_by(|a, b| a.row == b.row) {
         let Some(row) = row_icpts.first().map(|i| crate::grid::Row(i.row)) else { continue };
         let mut st = ApproxState::default();
         row_icpts

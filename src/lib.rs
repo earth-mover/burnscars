@@ -52,6 +52,7 @@ mod line;
 mod output;
 mod point;
 mod scratch;
+mod sort;
 
 pub use burner::{Burner, Mode, bbox};
 pub use error::{At, BurnError, GeomKind};
