@@ -51,7 +51,10 @@ fn second_burn_makes_no_allocation() {
         let mut out = BurnResult::default();
         let items =
             || geoms.iter().enumerate().map(|(i, x)| (GeomId(u32::try_from(i).unwrap_or(0)), x));
+        let warm_before = ALLOCS.load(Ordering::Relaxed);
         b.burn_into(&g, items(), &mut out).expect("warm-up");
+        // The warm-up must allocate, or the counting allocator is not in use.
+        assert!(ALLOCS.load(Ordering::Relaxed) > warm_before, "{mode:?}: allocator not counting");
         out.clear();
         let before = ALLOCS.load(Ordering::Relaxed);
         b.burn_into(&g, items(), &mut out).expect("burn");

@@ -46,3 +46,13 @@ fn display_text() {
     let s = BurnError::Internal { id: GeomId(7), detail: "x" }.to_string();
     assert!(s.contains("geometry 7: internal error: x"), "{s}");
 }
+
+/// Compile-time check of the thread-safety contract (test only).
+#[test]
+fn thread_safety_contract() {
+    fn copy_send_sync<T: Copy + Send + Sync>() {}
+    fn send<T: Send>() {}
+    copy_send_sync::<burnscars::Grid>();
+    send::<Burner>();
+    send::<BurnResult>();
+}
