@@ -21,3 +21,7 @@
 //! - `to_row_major()` builds the CSR index (`row_ptr`).
 //! - Two geometries can cover the same cell, so the full object is a sparse
 //!   `(row, col, id)` tensor. One geometry has at most one record per cell.
+
+mod grid;
+
+pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span};
