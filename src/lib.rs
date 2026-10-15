@@ -23,5 +23,10 @@
 //!   `(row, col, id)` tensor. One geometry has at most one record per cell.
 
 mod grid;
+mod output;
 
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span};
+pub use output::{
+    BurnResult, EdgeRef, Edges, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor,
+    RowMajorError, RunRef, Runs,
+};

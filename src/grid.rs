@@ -57,7 +57,6 @@ impl<T: Copy + Ord + Into<u32>> Span<T> {
         }
     }
     /// For code that already holds the invariant.
-    #[expect(dead_code, reason = "first used by a later task")]
     pub(crate) const fn from_parts(start: T, end: T) -> Self {
         Self { start, end }
     }
