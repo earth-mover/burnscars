@@ -106,6 +106,29 @@ pub(crate) fn rounding_guard(bx: &CellBox, from: Coord, next: Coord, x: Crossing
     Crossing { side, coord }
 }
 
+/// Walker rule 9 (burnscars only): a crossing within `tol` of a box corner moves onto
+/// the corner. The crossing is computed from the segment and the corner from the lattice,
+/// so they can differ by an ulp. Unsnapped, the walk enters the corner-adjacent cell for a
+/// one-ulp traversal that `left_hand_area` mis-chains. Snapped, that traversal has one
+/// unique coordinate and `classify` drops it, whichever side the crossing reports.
+pub(crate) fn corner_snap(bx: &CellBox, x: Crossing, tol: (f64, f64)) -> Crossing {
+    let near = |v: f64, lo: f64, hi: f64, t: f64| {
+        if (v - lo).abs() <= t {
+            lo
+        } else if (v - hi).abs() <= t {
+            hi
+        } else {
+            v
+        }
+    };
+    let c = x.coord;
+    let coord = match x.side {
+        Side::Left | Side::Right => Coord::new(c.x, near(c.y, bx.ymin, bx.ymax, tol.1)),
+        Side::Top | Side::Bottom => Coord::new(near(c.x, bx.xmin, bx.xmax, tol.0), c.y),
+    };
+    Crossing { side: x.side, coord }
+}
+
 /// From controlledburn `walk_polyline`
 /// ([cpp/src/scanline.cpp](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp));
 /// arena storage replaces `CellMap`. `coords` must already be snapped (rule 1); the
@@ -171,6 +194,8 @@ pub(crate) fn walk(
                     .crossing(from, next)
                     .ok_or(WalkError::Internal("segment does not leave the cell"))?;
                 let x = rounding_guard(&bx, from, next, x);
+                // Deliberate difference (spec table): walker rule 9.
+                let x = corner_snap(&bx, x, wg.snap_tol());
                 arena.coords.push(x.coord);
                 exit = Some(x.side);
                 if x.coord != next {
@@ -293,6 +318,19 @@ mod tests {
         assert_eq!(g.coord, Coord::new(0.3, 0.5));
         let ok = Crossing { side: Side::Right, coord: Coord::new(0.3, 0.5) };
         assert_eq!(rounding_guard(&bx, from, next, ok), ok);
+    }
+
+    // Rule 9: a crossing one ulp from a corner moves onto the corner; others stay.
+    #[test]
+    fn corner_snap_moves_near_corner_crossings() {
+        let bx = CellBox { xmin: 0.7, ymin: 0.4, xmax: 0.75, ymax: 0.45000000000000007 };
+        let tol = (0.05e-9, 0.05e-9);
+        let near = Crossing { side: Side::Right, coord: Coord::new(0.75, 0.45) };
+        assert_eq!(corner_snap(&bx, near, tol).coord, Coord::new(0.75, 0.45000000000000007));
+        let mid = Crossing { side: Side::Right, coord: Coord::new(0.75, 0.43) };
+        assert_eq!(corner_snap(&bx, mid, tol), mid);
+        let bottom = Crossing { side: Side::Bottom, coord: Coord::new(0.7 + 1e-12, 0.4) };
+        assert_eq!(corner_snap(&bx, bottom, tol).coord, Coord::new(0.7, 0.4));
     }
 
     // a line that ends on a padding wall at f64::MAX is not an error.

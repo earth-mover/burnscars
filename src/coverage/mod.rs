@@ -50,6 +50,7 @@ pub(crate) struct CoverageScratch {
     chains: Vec<Chain>,
     lha: Vec<Coord>,
     acc: Vec<CellAcc>,
+    ring_wind: Vec<i32>,
 }
 
 /// controlledburn `process_polygon` ([cpp/src/scanline.cpp](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp)) for all rings of one
@@ -92,7 +93,9 @@ pub(crate) fn burn(
     }
     // The ring number makes the key unique, so the float sums keep one order everywhere.
     s.acc.sort_unstable_by_key(|a| (a.row, a.col, a.ring));
-    sweep::emit(&s.acc, &wg, id, out);
+    s.ring_wind.clear();
+    s.ring_wind.resize(input.rings().count(), 0);
+    sweep::emit(&s.acc, &mut s.ring_wind, &wg, id, out);
     Ok(())
 }
 

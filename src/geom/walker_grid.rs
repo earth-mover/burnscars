@@ -140,14 +140,23 @@ impl WalkerGrid {
         let y = snap_axis(c.y, ((l.y0() - c.y) / l.dy()).round(), l.dy(), |k| l.y_edge(k));
         Coord::new(x, y)
     }
+
+    /// Snap tolerance (x, y): `SNAP_REL` of the cell size.
+    pub(crate) fn snap_tol(&self) -> (f64, f64) {
+        let l = self.grid.lattice();
+        (l.dx() * SNAP_REL, l.dy() * SNAP_REL)
+    }
 }
+
+/// Snap distance relative to the cell size (controlledburn `snap_to_lattice`).
+const SNAP_REL: f64 = 1e-9;
 
 fn snap_axis(v: f64, k: f64, step: f64, edge: impl Fn(i64) -> f64) -> f64 {
     if k.is_nan() || k.abs() >= 9.0e15 {
         return v; // far beyond any lattice index we can represent exactly
     }
     let e = edge(round_to_i64(k));
-    if (v - e).abs() <= step * 1e-9 { e } else { v }
+    if (v - e).abs() <= step * SNAP_REL { e } else { v }
 }
 
 #[expect(clippy::cast_possible_truncation, reason = "|k| < 9e15 is checked by the caller")]

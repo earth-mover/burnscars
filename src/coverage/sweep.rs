@@ -56,23 +56,50 @@ pub(crate) fn step(st: &mut SweepState, cell: MergedCell, n_cols: usize) -> [Opt
 }
 
 /// Sweeps each row of `acc` (sorted by row, col, ring) and writes global records.
-pub(crate) fn emit(acc: &[CellAcc], wg: &WalkerGrid, id: GeomId, out: &mut BurnResult) {
+/// `ring_wind` (one zeroed slot per ring) holds each ring's running winding in the row.
+///
+/// Deliberate difference (spec table): a cell's value is
+/// `Σ cov_r - (W_before - Σ w_r(before))` over the rings `r` that touch it. The bracket is
+/// the winding of the rings that cover the cell without touching it (exactextract gets
+/// them from its flood fill); inside a CCW ring the winding is -1, hence the minus. controlledburn uses `Σ cov_r` only and drops the boundary cells
+/// of a hole that is off the lattice.
+pub(crate) fn emit(
+    acc: &[CellAcc],
+    ring_wind: &mut [i32],
+    wg: &WalkerGrid,
+    id: GeomId,
+    out: &mut BurnResult,
+) {
     for row_cells in acc.chunk_by(|a, b| a.row == b.row) {
         let Some(row) = row_cells.first().and_then(|c| wg.row(c.row)) else { continue };
-        row_cells
-            .chunk_by(|a, b| a.col == b.col)
-            .filter_map(|cs| {
-                Some(MergedCell {
-                    col: cs.first()?.col,
-                    cov: cs.iter().fold(0.0, |s, c| s + c.cov),
-                    wind: cs.iter().map(|c| c.wind).sum(),
-                })
-            })
-            .scan(SweepState::default(), |st, c| Some(step(st, c, wg.n_cols())))
-            .flatten()
-            .flatten()
-            .filter_map(|e| to_global(e, row, wg))
-            .for_each(|e| out.push(id, e));
+        let mut st = SweepState::default();
+        for cs in row_cells.chunk_by(|a, b| a.col == b.col) {
+            let Some(first) = cs.first() else { continue };
+            let mut base = st.winding;
+            for c in cs {
+                base -= ring_wind.get(c.ring as usize).copied().unwrap_or(0);
+            }
+            #[expect(clippy::cast_precision_loss, reason = "|base| is a small ring count")]
+            let base = -(base as f32);
+            let cov = cs.iter().fold(0.0, |s, c| s + c.cov);
+            let wind = cs.iter().map(|c| c.wind).sum();
+            let cell = MergedCell { col: first.col, cov: base + cov, wind };
+            step(&mut st, cell, wg.n_cols())
+                .into_iter()
+                .flatten()
+                .filter_map(|e| to_global(e, row, wg))
+                .for_each(|e| out.push(id, e));
+            for c in cs {
+                if let Some(w) = ring_wind.get_mut(c.ring as usize) {
+                    *w += c.wind;
+                }
+            }
+        }
+        for c in row_cells {
+            if let Some(w) = ring_wind.get_mut(c.ring as usize) {
+                *w = 0;
+            }
+        }
     }
 }
 

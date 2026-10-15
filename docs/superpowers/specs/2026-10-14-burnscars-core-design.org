@@ -534,7 +534,7 @@ Sources: controlledburn ~walk_polyline~, ~walk_ring~, ~process_polygon~
 
 *** Walker
 
-Port ~walk_polyline~ arithmetic without change, except for rule 1. These rules are
+Port ~walk_polyline~ arithmetic without change, except for rules 1 and 9. These rules are
 required, and each one has a regression test:
 1. *Lattice snap* (from controlledburn ~snap_to_lattice~; exactextract does not snap):
    before the walk, each vertex within ~1e-9 * dx~ of a lattice column edge moves onto
@@ -565,6 +565,14 @@ required, and each one has a regression test:
 8. *Move*: the exit side moves the walk one cell (TOP: row - 1; BOTTOM: row + 1;
    LEFT: col - 1; RIGHT: col + 1). If the move leaves the walker grid (a local index
    below 0 or above ~n + 1~), the walk gives ~Internal~.
+9. *Corner snap* (burnscars only; neither controlledburn nor exactextract does this):
+   after rule 5, if the crossing is within ~1e-9 * dx~ (or ~dy~) of a corner of the box
+   along its side, it moves onto that corner. Cause: the crossing comes from the segment
+   and the corner from the lattice, so they can differ by an ulp. The walk then enters
+   the corner-adjacent cell for a traversal one ulp long, and ~left_hand_area~ chains it
+   wrongly (a cell of exact value 0.348 burned as 1.0). After the snap that traversal has
+   one unique coordinate and is not valid, whatever side the crossing reports, so no
+   ~orient2d~ test is needed.
 
 The walker records traversals in the arena (see [[*Storage][Storage]]), not in a map.
 
@@ -623,9 +631,17 @@ column (fractions added, deltas added):
   - If ~winding != 0~ and ~prev_col == Some(p)~ and ~c > p + 1~: emit the run
     ~[p + 1, c)~. This is controlledburn's ~prev_col > -2~ rule: a padding cell counts
     as seen.
-  - If ~c~ is a real column: with ~w~ = the fraction and ~tol = 1e-6~, emit an edge if
-    ~tol < w < 1 - tol~, and emit the one-cell run ~[c, c + 1)~ if ~w >= 1 - tol~.
-  - ~winding += delta(c)~; ~prev_col = Some(c)~.
+  - If ~c~ is a real column: with ~tol = 1e-6~ and
+    ~w = Σ_r cov_r(c) - (winding - Σ_r w_r)~, emit an edge if ~tol < w < 1 - tol~, and
+    emit the one-cell run ~[c, c + 1)~ if ~w >= 1 - tol~. The sums run over the rings
+    ~r~ that have a record at ~c~, and ~w_r~ is the running winding of ring ~r~ in the row
+    before ~c~. The bracket is the winding of the rings that cover the cell without
+    touching it; inside a CCW ring the winding is -1, hence the minus. exactextract gets
+    this term from its flood fill. controlledburn uses ~w = Σ_r cov_r(c)~ only, so a cell
+    on a hole that is off the lattice (inside the shell, not touched by it) gets ~-h~ and
+    is dropped. For a cell that only one ring touches the two forms are equal.
+  - ~winding += delta(c)~; ~w_r += delta_r(c)~ for each ring at ~c~; ~prev_col = Some(c)~.
+- At the end of the row, ~w_r = 0~ for each ring in the row.
 - A run is clamped to the real columns ~1..=n~ before the conversion to global indices.
   Every emit is guarded by ~start < end~.
 
@@ -776,6 +792,8 @@ The arithmetic does not change. Only the storage changes.
 | Output layout                       | array of structs                       | struct of arrays + ~geom_ptr~                      | zero-copy export, CSC index                           |
 | Index type                          | ~int32~                                | ~u32~ global; ~usize~ local in the walker grid     | follow exactextract ~infinite_extent~; no sentinel    |
 | ~winding_delta_left~                | present, never reached                 | removed                                            | dead code                                             |
+| Corner snap of crossings            | none                                   | walker rule 9                                      | one-ulp corner traversals gave wrong fractions        |
+| Hole cell value                     | ~Σ cov~ of the rings at the cell       | also adds the rings that cover it untouched        | holes off the lattice lost their boundary cells       |
 | Walker cell-visit bound             | none: C++ can loop forever             | ~WalkDiverged~ after a bound on cell visits        | the library must not hang on bad arithmetic           |
 | End of walk off the walker grid     | C++ increments and stops               | ends without error after the last input            | same result; only unspent input is an error           |
 | Approx window x pre-test            | tests the envelope against the grid box | also skips a geometry whose x range is outside the window columns | early exit for tile windows; kept (decision R8) |
@@ -803,6 +821,17 @@ The test files in ~tests/~:
 - The global lattice snap moves a vertex by at most ~1e-9~ of a cell. This is inside
   the oracle and area tolerances, so it needs no known-difference entry.
 - ~oracle.rs~: see [[*Oracle][Oracle]].
+- ~properties.rs~ (proptest, ported from controlledburn-rs ~6198e44~): random simple
+  rings on grids whose step is not a power of two, with vertices put on cell corners,
+  walls, centre lines, the grid edge and outside it. Six properties: area equals the
+  clipped ring area; well-formed tables; no change under ring reversal or start
+  rotation; each cell equals an exact per-cell clip (grids up to 16 x 16); approx and
+  coverage agree on full and empty cells; a 2x burn averaged over 2 x 2 blocks equals
+  the 1x burn. The generator rejects rings that touch themselves and spikes narrower
+  than 1e-9 rad (exactextract burns such a spike cell as 0, and burnscars matches it).
+  Two more properties use a shell with one snapped hole strictly inside it: area
+  conservation, and the exact per-cell clip of shell minus hole.
+  ~PROPTEST_CASES~ sets the case count (default 1000).
 - ~partition.rs~ (proptest): random valid polygons, lines, points and grids. The
   feature-split burn and the tile-split burn (random chunk sizes) each give the same
   expanded form as the full burn (see [[*Output order and determinism][Output order and determinism]]). Bit-for-bit

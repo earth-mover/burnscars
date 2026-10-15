@@ -57,6 +57,24 @@ fn hole_in_both_orientations() {
     }
 }
 
+/// A hole off the lattice: its boundary cells are inside the shell, which does not touch
+/// them, so each is `1 - hole fraction`. controlledburn drops them; exactextract agrees
+/// with this test.
+#[test]
+fn hole_off_the_lattice() {
+    let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
+    let outer = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)];
+    let four_cells = [(4.5, 4.5), (4.5, 5.5), (5.5, 5.5), (5.5, 4.5), (4.5, 4.5)];
+    let in_one_cell = [(4.2, 4.2), (4.2, 4.8), (4.8, 4.8), (4.8, 4.2), (4.2, 4.2)];
+    for (hole, area) in [(&four_cells[..], 99.0), (&in_one_cell[..], 99.64)] {
+        let r = burn1(&poly(&outer, &[hole]), &g);
+        assert!((covered_area(&r, &g) - area).abs() < 1e-5, "{hole:?}: {}", covered_area(&r, &g));
+    }
+    let r = burn1(&poly(&outer, &[&in_one_cell]), &g);
+    let cell = r.edges.iter().find(|e| (e.row.0, e.col.0) == (5, 4)).map(|e| e.fraction);
+    assert!(cell.is_some_and(|f| (f - 0.64).abs() < 1e-6), "cell (5, 4): {cell:?}");
+}
+
 #[test]
 fn disjoint_multipolygon() {
     let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
