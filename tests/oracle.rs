@@ -114,9 +114,9 @@ fn approx_matches_gdal_centre_rule() {
 #[test]
 #[ignore = "needs uv and the Python oracle"]
 fn fuzz_against_live_oracle() {
-    let dir = std::env::temp_dir().join("burnscars-fuzz-oracle");
+    let dir = std::env::temp_dir().join(format!("burnscars-fuzz-oracle-{}", std::process::id()));
     let status = std::process::Command::new("uv")
-        .args(["run", "--project", "oracle", "python", "oracle/generate.py", "--out"])
+        .args(["run", "--locked", "--project", "oracle", "python", "oracle/generate.py", "--out"])
         .arg(&dir)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
@@ -126,4 +126,7 @@ fn fuzz_against_live_oracle() {
     let cov = std::fs::read_to_string(dir.join("coverage.csv")).expect("coverage");
     let failures = mismatches("coverage", Mode::Coverage, &cases, &cov);
     assert!(failures.is_empty(), "coverage differs from the live oracle for: {failures:?}");
+    let approx = std::fs::read_to_string(dir.join("approx.csv")).expect("approx");
+    let failures = mismatches("approx", Mode::Approx, &cases, &approx);
+    assert!(failures.is_empty(), "approx differs from the live oracle for: {failures:?}");
 }

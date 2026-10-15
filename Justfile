@@ -40,7 +40,7 @@ bench *args:
 
 # Regenerate the oracle fixtures (needs uv).
 oracle *args:
-    uv run --project oracle python oracle/generate.py --out fixtures/oracle {{ args }}
+    uv run --locked --project oracle python oracle/generate.py --out fixtures/oracle {{ args }}
 
 # Differential fuzz against the live oracle (needs uv).
 fuzz-oracle:

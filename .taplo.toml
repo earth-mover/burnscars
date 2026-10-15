@@ -6,3 +6,12 @@ exclude = ["target/**", "oracle/.venv/**"]
 [formatting]
 reorder_keys = false
 reorder_arrays = false
+
+# Keep each `cells` array on one line.
+[[rule]]
+include = ["oracle/known_diffs.toml"]
+
+[rule.formatting]
+array_auto_expand = false
+array_auto_collapse = false
+column_width = 1000
