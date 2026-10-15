@@ -18,12 +18,43 @@ fn circle(n: usize, cx: f64, cy: f64, r: f64) -> Polygon<f64> {
     Polygon::new(pts, vec![])
 }
 
+/// controlledburn-rs `benches/burn.rs` coastline: 200k jittered vertices (xorshift32),
+/// for a direct comparison with that crate.
+#[expect(clippy::cast_precision_loss, reason = "bench indices")]
+fn coastline(n: usize) -> Polygon<f64> {
+    let mut state: u32 = 1;
+    let mut rnd = || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        f64::from(state) / f64::from(u32::MAX) * 0.8 - 0.4
+    };
+    let pts: LineString<f64> = (0..n)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            let r = 400.0 + 50.0 * (13.0 * a).sin() + rnd() * 20.0;
+            coord! { x: 500.0 + r * a.cos(), y: 500.0 + r * a.sin() }
+        })
+        .collect();
+    Polygon::new(pts, vec![])
+}
+
 #[expect(clippy::cast_possible_truncation, reason = "bench indices")]
 fn bench(c: &mut Criterion) {
     let big = circle(1_000_000, 50.0, 50.0, 40.0);
     let small: Vec<Polygon<f64>> = (0..10_000)
         .map(|i| circle(16, f64::from(i % 100) + 0.5, f64::from(i / 100) + 0.5, 0.4))
         .collect();
+    let coast = coastline(200_000);
+    for side in [1024_u32, 4096] {
+        let g = Grid::from_extent(0.0, 0.0, 1000.0, 1000.0, side, side).expect("grid");
+        for mode in [Mode::Coverage, Mode::Approx] {
+            c.bench_function(&format!("coastline_200k/{side}/{mode:?}"), |b| {
+                let mut burner = Burner::new(mode);
+                b.iter(|| black_box(burner.burn(&g, [(GeomId(0), &coast)]).expect("burn")));
+            });
+        }
+    }
     for side in [100_u32, 1_000, 10_000, 31_623] {
         let g = Grid::from_extent(0.0, 0.0, 100.0, 100.0, side, side).expect("grid");
         for mode in [Mode::Coverage, Mode::Approx] {
