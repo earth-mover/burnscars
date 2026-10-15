@@ -56,3 +56,6 @@ cast_possible_truncation = "warn"
 cast_sign_loss = "warn"
 cast_possible_wrap = "warn"
 cast_precision_loss = "warn"
+
+[dev-dependencies]
+proptest = "1.12.0"
