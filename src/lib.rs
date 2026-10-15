@@ -28,9 +28,10 @@ mod coverage;
 mod error;
 mod geom;
 mod grid;
-#[expect(dead_code, reason = "line and point accessors are first used by Task 10")]
 mod input;
+mod line;
 mod output;
+mod point;
 mod scratch;
 
 pub use burner::{Burner, Mode, bbox};

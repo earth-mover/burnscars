@@ -156,10 +156,6 @@ pub(crate) struct GeomStart {
 
 /// One table record. The only way to write the tables.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "line and point variants are first used by Task 10")
-)]
 pub(crate) enum Emit {
     Run { row: Row, cols: Span<Col> },
     Edge { row: Row, col: Col, fraction: f32 },

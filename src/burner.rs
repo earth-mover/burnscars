@@ -9,6 +9,7 @@ use crate::grid::{GeomId, Grid};
 use crate::input::{Loaded, for_each_xy};
 use crate::output::BurnResult;
 use crate::scratch::Scratch;
+use crate::{line, point};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -81,12 +82,8 @@ impl Burner {
                 Mode::Coverage => coverage::burn(&s.input, grid, id, &mut s.walk, &mut s.cov, out)?,
                 Mode::Approx => approx::burn(&s.input, grid, id, &mut s.icpt, out)?,
             },
-            Loaded::Lines => {
-                return Err(BurnError::Internal { id, detail: "line path lands in Task 10" });
-            }
-            Loaded::Points => {
-                return Err(BurnError::Internal { id, detail: "point path lands in Task 10" });
-            }
+            Loaded::Lines => line::burn(&s.input, grid, id, &mut s.walk, out)?,
+            Loaded::Points => point::burn(&s.input, grid, id, out),
         }
         out.end_geom(id, start);
         Ok(())
