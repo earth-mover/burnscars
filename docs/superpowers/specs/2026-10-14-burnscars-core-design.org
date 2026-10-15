@@ -122,7 +122,7 @@ burnscars/
   src/
     lib.rs            # crate docs + re-exports only
     grid.rs           # Lattice, Grid, GridError
-    output.rs         # Runs, Edges, Lines, Points, GeomSpan, BurnResult, RowMajor
+    output.rs         # Runs, Edges, Lines, Points, GeomIndex, BurnResult, RowMajor, *Ref
     error.rs          # BurnError, GeomKind
     burner.rs         # Burner, Mode, bbox(); dispatch by geometry kind
     input.rs          # geo-traits -> rings/lines/points in Scratch (only generic code)
@@ -165,13 +165,33 @@ The crate name is ~burnscars~. Edition 2024. The toolchain is pinned in
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lattice { x0: f64, y0: f64, dx: f64, dy: f64 }
 
-/// A window of a full extent on a lattice. All ranges are global lattice indices.
+/// Global lattice indices. The tables store them as plain `u32`; the rest of the API is typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] pub struct Row(pub u32);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] pub struct Col(pub u32);
+/// Caller-supplied geometry id. `From<u32>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] pub struct GeomId(pub u32);
+
+/// Non-empty half-open index range. `start < end` by construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span<T> { start: T, end: T }
+impl<T: Copy + Ord> Span<T> {
+    pub fn new(start: T, end: T) -> Result<Self, GridError>;   // Err if start >= end
+    pub fn start(&self) -> T;
+    pub fn end(&self) -> T;
+    pub fn contains_span(&self, other: Span<T>) -> bool;
+}
+
+/// Position of a coordinate against the full grid (one axis).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pos<T> { Before, In(T), After }
+
+/// A window of a full extent on a lattice. All spans are global lattice indices.
 /// `window()` keeps the full extent, so the edge rules of the full grid hold in every chunk.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Grid {
     lattice: Lattice,
-    full_rows: Range<u32>, full_cols: Range<u32>,   // the full grid
-    rows: Range<u32>, cols: Range<u32>,             // the window; inside the full grid
+    full_rows: Span<Row>, full_cols: Span<Col>,   // the full grid
+    rows: Span<Row>, cols: Span<Col>,             // the window; inside the full grid
 }
 
 impl Lattice {
@@ -185,25 +205,23 @@ impl Grid {
     /// Full grid = window = `rows` x `cols`.
     /// Do not use this for a chunk: a chunk made here closes its own right and bottom
     /// edges, so a point on a seam goes into two chunks. Use `window()` for chunks.
-    pub fn new(lattice: Lattice, rows: Range<u32>, cols: Range<u32>) -> Result<Self, GridError>;
+    pub fn new(lattice: Lattice, rows: Span<Row>, cols: Span<Col>) -> Result<Self, GridError>;
     /// Column of `x` against the full grid. See "Index authority".
-    /// Returns `full_cols.start - 1` left of the full grid and `full_cols.end` right of it.
-    pub fn col_of(&self, x: f64) -> i64;
-    /// Row of `y` against the full grid. See "Index authority".
-    /// Returns `full_rows.start - 1` above the full grid and `full_rows.end` below it.
-    pub fn row_of(&self, y: f64) -> i64;
+    pub fn col_of(&self, x: f64) -> Pos<Col>;
+    /// Row of `y` against the full grid. `Before` is above the grid. See "Index authority".
+    pub fn row_of(&self, y: f64) -> Pos<Row>;
     /// Same meaning as controlledburn `GridSpec`: x0 = xmin, y0 = ymax,
     /// dx = (xmax - xmin) / ncol, dy = (ymax - ymin) / nrow, rows 0..nrow, cols 0..ncol.
     pub fn from_extent(xmin: f64, ymin: f64, xmax: f64, ymax: f64,
                        ncol: u32, nrow: u32) -> Result<Self, GridError>;
     /// A sub-window with the same lattice and the same full grid (for example a brix chunk).
     /// Errors if `rows` or `cols` is empty or not inside the full grid.
-    pub fn window(&self, rows: Range<u32>, cols: Range<u32>) -> Result<Grid, GridError>;
+    pub fn window(&self, rows: Span<Row>, cols: Span<Col>) -> Result<Grid, GridError>;
     pub fn lattice(&self) -> &Lattice;
-    pub fn rows(&self) -> Range<u32>;
-    pub fn cols(&self) -> Range<u32>;
-    pub fn full_rows(&self) -> Range<u32>;
-    pub fn full_cols(&self) -> Range<u32>;
+    pub fn rows(&self) -> Span<Row>;
+    pub fn cols(&self) -> Span<Col>;
+    pub fn full_rows(&self) -> Span<Row>;
+    pub fn full_cols(&self) -> Span<Col>;
 }
 #+end_src
 
@@ -217,14 +235,15 @@ Rules:
 *** Index authority
 
 The cell edges are the authority. ~Grid::col_of(x)~, with ~[s, e) = full_cols~, is
-exactextract ~Grid<infinite_extent>::get_column~ (~src/grid.h~) on the lattice:
-1. If ~x < x_edge(s)~, return ~s - 1~. If ~x > x_edge(e)~, return ~e~.
-2. If ~x == x_edge(e)~, return ~e - 1~ (see [[*Closed edges of the full grid][Closed edges of the full grid]]).
+exactextract ~Grid<infinite_extent>::get_column~ (~src/grid.h~) on the lattice. The
+padding positions of exactextract become ~Pos::Before~ and ~Pos::After~:
+1. If ~x < x_edge(s)~, return ~Before~. If ~x > x_edge(e)~, return ~After~.
+2. If ~x == x_edge(e)~, return ~In(e - 1)~ (see [[*Closed edges of the full grid][Closed edges of the full grid]]).
 3. Else ~c = floor((x - x0)/dx)~, clamped to ~[s, e - 1]~. Then correct ~c~ by ±1,
-   inside ~[s, e - 1]~, until ~x_edge(c) <= x < x_edge(c + 1)~.
+   inside ~[s, e - 1]~, until ~x_edge(c) <= x < x_edge(c + 1)~. Return ~In(c)~.
 
 ~Grid::row_of(y)~ is the same with ~y_edge~ and ~full_rows~ (above the grid gives
-~s - 1~, below it gives ~e~, ~y == y_edge(e)~ gives ~e - 1~).
+~Before~, below it gives ~After~, ~y == y_edge(e)~ gives ~In(e - 1)~).
 - Steps 1 and 2 bound ~x~ before any cast, so a large finite coordinate (for example
   ~1e300~) cannot overflow, and the correction always stops.
 - The index of a coordinate always agrees with the cell box that contains it.
@@ -255,10 +274,10 @@ pub struct Lines  { pub row: Vec<u32>, pub col: Vec<u32>, pub length: Vec<f32>, 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Points { pub row: Vec<u32>, pub col: Vec<u32>, pub id: Vec<u32> }
 
-/// The table rows of one input item (the CSC index).
+/// The table rows of one input item (the CSC index). Ranges may be empty.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GeomSpan {
-    pub id: u32,
+pub struct GeomIndex {
+    pub id: GeomId,
     pub runs: Range<usize>, pub edges: Range<usize>,
     pub lines: Range<usize>, pub points: Range<usize>,
 }
@@ -266,7 +285,7 @@ pub struct GeomSpan {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BurnResult {
     pub runs: Runs, pub edges: Edges, pub lines: Lines, pub points: Points,
-    pub geom_ptr: Vec<GeomSpan>,
+    pub geom_ptr: Vec<GeomIndex>,
 }
 
 impl BurnResult {
@@ -274,15 +293,26 @@ impl BurnResult {
     pub fn len(&self) -> usize;       // total table rows
     pub fn is_empty(&self) -> bool;
     /// Row-major (CSR) index over `rows`. Errors if a table row is outside `rows`.
-    pub fn to_row_major(&self, rows: Range<u32>) -> Result<RowMajor, RowMajorError>;
+    #[must_use = "the index is the only result"]
+    pub fn to_row_major(&self, rows: Span<Row>) -> Result<RowMajor, RowMajorError>;
 }
+
+// Typed read access; the columns stay plain for zero-copy export.
+pub struct RunRef   { pub row: Row, pub cols: Span<Col>, pub id: GeomId }
+pub struct EdgeRef  { pub row: Row, pub col: Col, pub fraction: f32, pub id: GeomId }
+pub struct LineRef  { pub row: Row, pub col: Col, pub length: f32, pub id: GeomId }
+pub struct PointRef { pub row: Row, pub col: Col, pub id: GeomId }
+impl Runs   { pub fn iter(&self) -> impl ExactSizeIterator<Item = RunRef> + '_; }
+impl Edges  { pub fn iter(&self) -> impl ExactSizeIterator<Item = EdgeRef> + '_; }
+impl Lines  { pub fn iter(&self) -> impl ExactSizeIterator<Item = LineRef> + '_; }
+impl Points { pub fn iter(&self) -> impl ExactSizeIterator<Item = PointRef> + '_; }
 
 /// CSR view. For row r: `runs[run_ptr[r - r0]..run_ptr[r - r0 + 1]]` are indices into
 /// `BurnResult::runs`; the same for edges, lines and points. Within a row, the
 /// entries keep burn order; they are not sorted by column.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowMajor {
-    pub rows: Range<u32>,
+    pub rows: Span<Row>,
     pub run_ptr: Vec<usize>, pub runs: Vec<usize>,
     pub edge_ptr: Vec<usize>, pub edges: Vec<usize>,
     pub line_ptr: Vec<usize>, pub lines: Vec<usize>,
@@ -292,7 +322,7 @@ pub struct RowMajor {
 
 - ~to_row_major~ is a stable counting sort by row: O(n + rows). It stores permutation
   indices and copies no table data.
-- ~geom_ptr~ holds one ~GeomSpan~ for each input item, including empty geometries
+- ~geom_ptr~ holds one ~GeomIndex~ for each input item, including empty geometries
   (with empty ranges), in input order.
 - ~fraction~ and ~length~ are ~f32~, the same as in controlledburn.
 
@@ -317,6 +347,7 @@ Technical English:
 
 #+begin_src rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Mode { Coverage, Approx }
 
 /// One per worker. `Send`, not `Sync`. Owns the scratch buffers and reuses them.
@@ -328,13 +359,13 @@ impl Burner {
     pub fn mode(&self) -> Mode;
 
     /// Burns each `(id, geometry)` onto the window of `grid` and appends to `out`.
-    /// On error, `out` is truncated back to its state at the call start.
+    /// Stops at the first error. See "Errors" for the state of `out` after an error.
     pub fn burn_into<G, I>(&mut self, grid: &Grid, geoms: I, out: &mut BurnResult)
         -> Result<(), BurnError>
-    where G: GeometryTrait<T = f64>, I: IntoIterator<Item = (u32, G)>;
+    where G: GeometryTrait<T = f64>, I: IntoIterator<Item = (GeomId, G)>;
 
     pub fn burn<G, I>(&mut self, grid: &Grid, geoms: I) -> Result<BurnResult, BurnError>
-    where G: GeometryTrait<T = f64>, I: IntoIterator<Item = (u32, G)>;
+    where G: GeometryTrait<T = f64>, I: IntoIterator<Item = (GeomId, G)>;
 }
 
 /// Envelope of a geometry (finite coordinates only). None if it has none.
@@ -346,50 +377,67 @@ pub fn bbox<G: GeometryTrait<T = f64>>(geom: &G) -> Option<[f64; 4]>;  // xmin, 
 
 #+begin_src rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GeomKind { Point, LineString, Polygon, MultiPoint, MultiLineString,
                     MultiPolygon, GeometryCollection, Rect, Triangle, Line }
 
+/// Where in a geometry an error occurred. `Display` gives "geometry 7, part 0, ring 1, vertex 3".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct At { pub id: GeomId, pub part: usize, pub ring: usize, pub vertex: usize }
+
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BurnError {
-    #[error("geometry {id}: unsupported type {kind:?}; split collections into one type each")]
-    Unsupported { id: u32, kind: GeomKind },
-    #[error("geometry {id}, part {part}, ring {ring}, vertex {vertex}: non-finite coordinate ({x}, {y})")]
-    NonFinite { id: u32, part: usize, ring: usize, vertex: usize, x: f64, y: f64 },
-    #[error("geometry {id}, part {part}, ring {ring}: {n} coordinates; a closed ring needs at least 4")]
-    ShortRing { id: u32, part: usize, ring: usize, n: usize },
-    #[error("geometry {id}, part {part}: 1 coordinate; a line needs at least 2")]
-    ShortLine { id: u32, part: usize },
-    #[error("geometry {id}, part {part}, ring {ring}: walk did not converge after {coords} coordinates")]
-    WalkDiverged { id: u32, part: usize, ring: usize, coords: usize },
-    #[error("geometry {id}: internal error: {detail}")]
-    Internal { id: u32, detail: &'static str },
+    #[error("geometry {id:?}: unsupported type {kind:?}; split collections into one type each")]
+    Unsupported { id: GeomId, kind: GeomKind },
+    #[error("{at}: non-finite coordinate ({x}, {y})")]
+    NonFinite { at: At, x: f64, y: f64 },
+    #[error("{at}: {n} coordinates; a closed ring needs at least 4")]
+    ShortRing { at: At, n: usize },
+    #[error("{at}: 1 coordinate; a line needs at least 2")]
+    ShortLine { at: At },
+    #[error("{at}: walk did not converge after {coords} coordinates")]
+    WalkDiverged { at: At, coords: usize },
+    #[error("geometry {id:?}: internal error: {detail}")]
+    Internal { id: GeomId, detail: &'static str },
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GridError {
     #[error("non-finite lattice value: {0}")]
     NonFinite(&'static str),
     #[error("resolution must be > 0: dx = {dx}, dy = {dy}")]
     Resolution { dx: f64, dy: f64 },
-    #[error("empty range: rows {rows:?}, cols {cols:?}")]
-    Empty { rows: Range<u32>, cols: Range<u32> },
+    #[error("empty span: start {start}, end {end}")]
+    EmptySpan { start: u32, end: u32 },
     #[error("window rows {rows:?}, cols {cols:?} is outside the full grid")]
-    Outside { rows: Range<u32>, cols: Range<u32> },
+    Outside { rows: Span<Row>, cols: Span<Col> },
     #[error("extent is invalid: {0}")]
     Extent(&'static str),
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("table row {row} is outside rows {rows:?}")]
-pub struct RowMajorError { pub row: u32, pub rows: Range<u32> }
+#[error("table row {row:?} is outside rows {rows:?}")]
+pub struct RowMajorError { pub row: Row, pub rows: Span<Row> }
 #+end_src
 
 - ~part~ is the index of the component in a Multi geometry, and 0 for a single
   geometry. ~ring~ is the index of the ring in its polygon (0 = exterior).
 - For a line, ~ring~ is 0 and ~vertex~ is the vertex index in the part. For a point,
-  ~ring~ and ~vertex~ are 0.
+  ~ring~ and ~vertex~ are 0. For ~ShortRing~, ~ShortLine~ and ~WalkDiverged~,
+  ~vertex~ is 0.
 - ~Internal~ replaces a panic: for example, a walker index that leaves the walker grid.
   The library code never panics on input data.
+- *State of ~out~ after an error.* There is no rollback. Two rules make the state
+  well defined:
+  - Each geometry is fully validated (normalization, see [[*Input normalization (~input.rs~)][Input normalization]]) before it
+    writes any record. So after ~Unsupported~, ~NonFinite~, ~ShortRing~ or ~ShortLine~,
+    ~out~ holds exactly the complete geometries before the failing one.
+  - A geometry's ~GeomIndex~ is pushed only after the geometry is complete. After
+    ~WalkDiverged~ or ~Internal~, records of the failing geometry can follow the last
+    ~GeomIndex~. A caller that needs only complete records truncates each table to the
+    end of the last ~GeomIndex~. The docs of ~burn_into~ say this.
 - ~Burner::burn_into~ stops at the first error. An orchestrator that wants "skip and
   report" calls it once for each geometry. That costs no extra allocation, because the
   scratch buffers stay in the ~Burner~.
@@ -417,7 +465,7 @@ The core is sequential. An orchestrator runs it in parallel like this:
   its chunk onto ~grid.window(rows, cols)~. Make chunks with ~window()~, not with
   ~Grid::new~, so that every chunk keeps the full-grid edge rules. Each chunk output is complete for its
   window, so no merge is necessary.
-- ~Grid~ is ~Clone + Send + Sync~. ~Burner~ and ~BurnResult~ are ~Send~.
+- ~Grid~ is ~Copy + Send + Sync~. ~Burner~ and ~BurnResult~ are ~Send~.
 - Known v1 limit: each chunk scans every vertex of each geometry that meets it, so a
   large polygon over many chunks costs O(vertices × chunks). R3 and R4 remove this.
 
@@ -441,7 +489,7 @@ ported item has a docstring that names its upstream file and function (see
   ~ShortLine~. A line whose coordinates are all equal gives no records.
 - *Non-finite* coordinates give ~NonFinite~. Exception: a point whose ~coord()~ is
   ~None~ (POINT EMPTY) is skipped.
-- *Empty geometries* are skipped. They still get a ~GeomSpan~.
+- *Empty geometries* are skipped. They still get a ~GeomIndex~.
 - *Orientation*: signed area by the shoelace formula, with counter-clockwise positive.
   This is controlledburn ~signed_area~ (~cpp/src/scanline.cpp~). A ring that is not
   CCW is reversed in the copy. Note: exactextract ~area~ (~src/measures.cpp~) uses the
@@ -455,7 +503,8 @@ Source: exactextract ~processing_region~ and ~get_geometry_grid~
 - The region starts from the union of the component envelopes (finite coordinates).
 - On the lattice, the column range is ~col_of(xmin) - 1 ..= col_of(xmax) + 1~. The row
   range is ~row_of(ymax) - 1 ..= row_of(ymin) + 1~: ~ymax~ gives the low row index,
-  because row 0 is at the top. Both ranges are then clamped to the window.
+  because row 0 is at the top. ~Pos::Before~ maps to the window start and ~Pos::After~
+  to the window end. Both ranges are then clamped to the window.
 - The empty test runs on these index ranges, after the margin and the clamp. The
   region is empty only if a clamped range is empty. Thus an envelope with zero width
   or zero height (a horizontal or vertical line) is not empty.
@@ -491,8 +540,8 @@ required, and each one has a regression test:
    there is *no range test*. controlledburn snaps only to edges inside the padded
    subgrid, which depends on the window and breaks partition equality.
 2. *Start cell* from the first coordinate, with one formula:
-   ~local_col = clamp(col_of(x) - region_col_start + 1, 0, n + 1)~, and the same for
-   rows with ~row_of~. This is exactextract ~Grid::get_row~ / ~get_column~ semantics on
+   ~local_col = match col_of(x) { Before => 0, After => n + 1, In(c) => clamp(c - region_col_start + 1, 0, n + 1) }~,
+   and the same for rows with ~row_of~. This is exactextract ~Grid::get_row~ / ~get_column~ semantics on
    the walker grid: outside the region the coordinate goes to padding 0 or ~n + 1~. The
    closed-edge rule applies only at the edges of the full grid (see
    [[*Closed edges of the full grid][Closed edges of the full grid]]).
@@ -566,7 +615,7 @@ sweep. So one geometry gives at most one record per cell.
 
 For each real row of the walker grid, with the accumulator sorted and merged by local
 column (fractions added, deltas added):
-- ~winding = 0~, ~prev_col: Option<usize> = None~.
+- ~winding = 0~, ~prev_col: Option<LocalCol> = None~.
 - For each merged cell at local column ~c~ (padding columns included):
   - If ~winding != 0~ and ~prev_col == Some(p)~ and ~c > p + 1~: emit the run
     ~[p + 1, c)~. This is controlledburn's ~prev_col > -2~ rule: a padding cell counts
@@ -590,7 +639,8 @@ range comes from the union envelope. controlledburn runs one sweep per component
 the exterior envelope only. The union gives one record per cell, which matches the
 coverage path.
 - The row range is the envelope rows clamped to the window:
-  ~row_lo = max(r0, row_of(ymax))~ and ~row_hi = min(r1 - 1, row_of(ymin))~.
+  ~row_lo = max(r0, row_of(ymax))~ and ~row_hi = min(r1 - 1, row_of(ymin))~, with
+  ~Before~ and ~After~ mapped to the window ends.
 - The approx path reads the normalized rings (all CCW, see [[*Input normalization (~input.rs~)][Input normalization]]).
   The winding factor is +1 for an exterior ring and -1 for a hole, the same as in the
   coverage path. controlledburn tests ~is_ccw~ here because it does not normalize; the
@@ -603,7 +653,8 @@ coverage path.
 - The delta is ~(y1e < y0e ? -1 : +1) * factor~. It comes from the edge endpoints, not
   from ~y0e~ against ~y_mid~. This is controlledburn fix ~65af8d7~.
 - *Sweep* for each row, with the intercepts sorted by ~x~ (~f64::total_cmp~):
-  ~col = col_of(x)~ clamped to the window columns, ~x_mid = x_edge(col) + 0.5*dx~, and
+  ~col = col_of(x)~ mapped and clamped to the window columns (~Before~ to the first,
+  ~After~ to the last), ~x_mid = x_edge(col) + 0.5*dx~, and
   left of centre means ~x <= x_mid~ (left-inclusive).
   - Left of centre: going from not-zero to zero closes the run before ~col~. Going from
     zero to not-zero starts the run at ~col~.
@@ -629,10 +680,59 @@ margin makes the region non-empty.
 
 ** Points
 
-- The cell is ~(row_of(y), col_of(x))~, with the closed-edge rule at the edges of the
+- The cell is ~(row_of(y), col_of(x))~ if both are ~In~; else the point is outside the
+  full grid and gives no record. The closed-edge rule applies at the edges of the
   full grid (see [[*Closed edges of the full grid][Closed edges of the full grid]]). This gives the same cells as exactextract
   and controlledburn for a full-grid burn.
 - The point is emitted if its cell is inside the window.
+
+* Type safety and idioms
+
+** Types
+
+- *Index newtypes*: ~Row~, ~Col~ (global, public) and ~LocalRow~, ~LocalCol~ (walker
+  grid, private, ~usize~, exactextract ~infinite_extent~ layout). A local index becomes
+  global only through ~WalkerGrid::col(LocalCol) -> Option<Col>~ (and ~row~), which
+  returns ~None~ for padding. So the compiler makes the code handle padding.
+- ~GeomId~ in the API and in errors. The tables keep plain ~u32~ columns for zero-copy
+  export; the ~iter()~ accessors give typed records (~RunRef~, ~EdgeRef~, ...).
+- ~Span<T>~ is non-empty by construction and ~Copy~. ~Lattice~ and ~Grid~ have private
+  fields, checked constructors, and are ~Copy~.
+- ~Pos<T> { Before, In(T), After }~ replaces the out-of-grid sentinel indices.
+- *Normalized rings*: ~NormRing<'s> { coords: &'s [Coord], role: RingRole }~ is closed,
+  has at least 4 coordinates, is all finite, and is CCW. Only ~input.rs~ makes one. The
+  walker and the approx path take ~NormRing~ and do no checks of their own.
+  ~RingRole { Exterior, Hole }~ with ~sign()~ replaces ~is_exterior: bool~.
+- ~Option<Side>~ replaces exactextract ~Side::NONE~.
+- ~Traversal::classify() -> Option<Valid>~ with
+  ~Valid { Through { entry: Side, exit: Side }, ClosedInCell }~ replaces the boolean
+  validity tests.
+- ~CellClass::of(w) -> CellClass { Empty, Edge(f32), Full }~ holds the ~1e-6~
+  threshold test in one place.
+- ~enum Emit { Run { row, cols }, Edge { row, col, fraction } }~ and one function
+  ~push(&mut BurnResult, GeomId, Emit)~ are the only way to write a table record.
+- ~#[non_exhaustive]~ on ~Mode~, ~GeomKind~, ~BurnError~, ~GridError~. ~#[must_use]~ on
+  constructors and on ~to_row_major~.
+- *Casts*: the lints ~clippy::cast_possible_truncation~, ~cast_sign_loss~,
+  ~cast_possible_wrap~ and ~cast_precision_loss~ are at warn. The only float-to-index
+  cast is in ~col_of~ / ~row_of~, after the bound check, with an
+  ~#[expect(..., reason = "...")]~. Every ~usize~ to ~u32~ conversion uses ~try_from~
+  and maps a failure to ~BurnError::Internal~.
+
+** Functional idioms
+
+Use combinators where they make the code shorter and clearer:
+
+| Place                                                      | Idiom                                                                                     |
+|------------------------------------------------------------+-------------------------------------------------------------------------------------------|
+| Input normalization                                        | ~rings.enumerate().map(normalize)~ with ~try_for_each~ / ~collect::<Result<_, _>>~        |
+| Arena grouping (O1), accumulator merge (O2), lines (O5)    | ~slice::chunk_by(same_cell)~, then ~map(merge)~                                           |
+| Coverage sweep, approx sweep                               | a pure ~step(&mut SweepState, Cell) -> impl Iterator<Item = Emit>~ driven by ~scan(..).flatten()~; each step is unit-tested |
+| Shoelace (O3)                                              | ~windows(3).map(..).sum()~ (a left fold in order: the same bits as the C++ loop)          |
+| Corner selection in ~analytical_covered_fraction~          | ~filter~ into a fixed ~[_; 4]~ buffer, then ~sort_by(total_cmp)~; no allocation           |
+
+Do not use them in the walker loop (~walk_polyline~) or the reprocess branch. These stay
+explicit state machines, so a line-by-line comparison with the C++ stays easy.
 
 * Storage
 
@@ -668,7 +768,7 @@ The arithmetic does not change. Only the storage changes.
 | Line parts                          | one record per part                    | one record per cell                                | follow exactextract                                   |
 | Ring with 1–3 coordinates           | skipped silently                       | ~ShortRing~ error                                  | user request: clear errors                            |
 | Unclosed ring                       | not handled                            | auto-closed                                        | geo-traits does not guarantee closure                 |
-| Errors                              | notes, continue                        | ~Result~, fail-fast, atomic                        | user request                                          |
+| Errors                              | notes, continue                        | ~Result~, fail-fast; validate before write         | user request                                          |
 | Lines                               | walked on the full grid                | walked on the processing region of the window      | O(cells touched) in the window                        |
 | Output layout                       | array of structs                       | struct of arrays + ~geom_ptr~                      | zero-copy export, CSC index                           |
 | Index type                          | ~int32~                                | ~u32~ global; ~usize~ local in the walker grid     | follow exactextract ~infinite_extent~; no sentinel    |
@@ -708,7 +808,8 @@ The test files in ~tests/~:
   is then not a difference.
 - ~fraction.rs~ (unit or proptest): O3 against the reference version (see [[*Storage][Storage]]).
 - ~errors.rs~: each ~BurnError~, ~GridError~ and ~RowMajorError~ variant, and the
-  truncation of ~out~ after an error. Exempt: ~Internal~ and ~WalkDiverged~, which valid
+  state of ~out~ after an error (complete geometries before the failing one; ~geom_ptr~
+  has no entry for it). Exempt: ~Internal~ and ~WalkDiverged~, which valid
   input cannot cause. Their messages are covered by a unit test of the ~Display~ text.
 - ~regression.rs~ also has a test with coordinates of ~±1e300~ (no panic, no overflow)
   and a test with a horizontal and a vertical line (records are emitted).
@@ -758,6 +859,8 @@ Copy from brix (~~/repos/brix~):
 - The ~[workspace.lints.rust]~ and ~[workspace.lints.clippy]~ tables, as crate-level
   ~[lints.rust]~ and ~[lints.clippy]~. Remove ~reversed_empty_ranges = "allow"~: it is
   for brix's numpy-style negative ranges, and this crate has none.
+  Add ~cast_possible_truncation~, ~cast_sign_loss~, ~cast_possible_wrap~ and
+  ~cast_precision_loss~ at warn (see [[*Type safety and idioms][Type safety and idioms]]).
 - ~deny.toml~: a ~[licenses]~ allow-list that starts from the brix list (MIT,
   Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause). Run
   ~cargo deny check licenses~ when the crate is set up, and add only the permissive
