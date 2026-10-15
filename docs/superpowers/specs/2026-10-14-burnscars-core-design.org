@@ -76,8 +76,11 @@ it is deterministic. Fill rule: nonzero winding. The approx oracle, GDAL
 ~GDALdllImageFilledPolygon~ (~alg/llrasterize.cpp~), uses even-odd: it sorts the
 crossings of each scanline and fills between pairs. For valid input the two rules give
 the same result. GDAL also samples at the cell centre (~y + 0.5~) and uses a half-open
-edge test (~dy < dy2 && dy >= dy1~ in image rows), which is the same as the approx
-rule ~ya < y_mid <= yb~ in world coordinates.
+edge test (~dy < dy2 && dy >= dy1~ in image rows). The approx rule ~ya < y_mid <= yb~
+in world coordinates is the same test for the rows. The two rules differ where the
+cell centre is exactly on an edge (a tie): GDAL rounds the intercepts, and burnscars
+compares the exact intercept with ~x_mid~. These cells are listed in
+~oracle/known_diffs.toml~.
 
 Not in v1 (the README TODO lists these items, see [[*README TODO list][README TODO list]]):
 - Materialize and pixel functions (a brix adapter will do this).
@@ -773,6 +776,9 @@ The arithmetic does not change. Only the storage changes.
 | Output layout                       | array of structs                       | struct of arrays + ~geom_ptr~                      | zero-copy export, CSC index                           |
 | Index type                          | ~int32~                                | ~u32~ global; ~usize~ local in the walker grid     | follow exactextract ~infinite_extent~; no sentinel    |
 | ~winding_delta_left~                | present, never reached                 | removed                                            | dead code                                             |
+| Walker cell-visit bound             | none: C++ can loop forever             | ~WalkDiverged~ after a bound on cell visits        | the library must not hang on bad arithmetic           |
+| End of walk off the walker grid     | C++ increments and stops               | ends without error after the last input            | same result; only unspent input is an error           |
+| Approx window x pre-test            | tests the envelope against the grid box | also skips a geometry whose x range is outside the window columns | early exit for tile windows; kept (decision R8) |
 
 * Testing
 
