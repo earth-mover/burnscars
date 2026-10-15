@@ -1,0 +1,11 @@
+burnscars
+Copyright 2026 The burnscars authors.
+
+This product includes code ported from controlledburn
+(https://github.com/hypertidy/controlledburn), Copyright 2025 Michael Sumner,
+licensed under the Apache License, Version 2.0.
+
+This product includes code ported from the exactextract library
+(https://github.com/isciences/exactextract), Copyright 2018-2022 ISciences, LLC,
+licensed under the Apache License, Version 2.0. The ported subset is the algorithm
+core only (box, crossing, perimeter distance, traversal areas, grid indexing).

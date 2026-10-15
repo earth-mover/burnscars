@@ -1,0 +1,12 @@
+# Pins the toolchain for rustup, CI and the pre-commit hooks. CI used to
+# install `stable`, so every Rust release could break a PR that touched
+# nothing — a new lint fires in CI and no local run reproduces it.
+#
+# To bump: raise `channel`, run `just ci`, and land the fallout in the same
+# commit.
+#
+# The nix shell gets its toolchain from fenix, which reads flake.lock rather
+# than this file; `nix flake update` is what moves it.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

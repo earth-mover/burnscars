@@ -1,0 +1,8 @@
+# taplo config for `just format-toml`.
+
+include = ["**/*.toml"]
+exclude = ["target/**", "oracle/.venv/**"]
+
+[formatting]
+reorder_keys = false
+reorder_arrays = false

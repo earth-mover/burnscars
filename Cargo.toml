@@ -1,0 +1,58 @@
+[package]
+name = "burnscars"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+description = "Sparse rasterization of polygons, lines and points with exact coverage fractions; a Rust port of controlledburn"
+readme = "README.md"
+publish = false
+
+[dependencies]
+geo-traits = { version = "0.3", default-features = false }
+thiserror = "2"
+
+[lints.rust]
+# Safety
+unsafe_code = "warn"
+# Correctness
+bare_trait_objects = "warn"
+unreachable_pub = "warn"
+# Clarity
+elided_lifetimes_in_paths = "warn"
+missing_debug_implementations = "warn"
+trivial_numeric_casts = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+# Safety & correctness
+exit = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+# Clarity & style
+allow_attributes = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+doc_markdown = "warn"
+implicit_clone = "warn"
+manual_let_else = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unused_result_ok = "warn"
+unused_trait_names = "warn"
+# Performance
+inefficient_to_string = "warn"
+large_types_passed_by_value = "warn"
+needless_pass_by_value = "warn"
+# Cargo
+create_dir = "warn"
+wildcard_dependencies = "warn"
+# Numeric casts (spec: Type safety and idioms)
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
