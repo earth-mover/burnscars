@@ -59,7 +59,6 @@ pub(crate) struct Arena {
 }
 
 impl Arena {
-    #[cfg_attr(test, expect(dead_code, reason = "first used by Task 8"))]
     pub(crate) fn clear(&mut self) {
         self.coords.clear();
         self.travs.clear();
@@ -74,7 +73,6 @@ pub(crate) enum WalkError {
 }
 
 impl WalkError {
-    #[cfg_attr(test, expect(dead_code, reason = "first used by Task 8"))]
     pub(crate) fn at(self, at: At) -> BurnError {
         match self {
             Self::Diverged { coords } => BurnError::WalkDiverged { at, coords },

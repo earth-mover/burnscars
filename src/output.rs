@@ -147,7 +147,6 @@ pub struct GeomIndex {
 
 /// Table lengths at the start of one geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by Task 8"))]
 pub(crate) struct GeomStart {
     runs: usize,
     edges: usize,
@@ -157,7 +156,10 @@ pub(crate) struct GeomStart {
 
 /// One table record. The only way to write the tables.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by Task 8"))]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "line and point variants are first used by Task 10")
+)]
 pub(crate) enum Emit {
     Run { row: Row, cols: Span<Col> },
     Edge { row: Row, col: Col, fraction: f32 },
@@ -228,7 +230,6 @@ impl BurnResult {
         self.len() == 0
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by Task 8"))]
     pub(crate) fn push(&mut self, id: GeomId, e: Emit) {
         match e {
             Emit::Run { row, cols } => {
@@ -257,7 +258,6 @@ impl BurnResult {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by Task 8"))]
     pub(crate) fn start_geom(&self) -> GeomStart {
         GeomStart {
             runs: self.runs.len(),
@@ -268,7 +268,6 @@ impl BurnResult {
     }
 
     /// Pushed only after the geometry is complete (spec: state of `out` after an error).
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by Task 8"))]
     pub(crate) fn end_geom(&mut self, id: GeomId, s: GeomStart) {
         self.geom_ptr.push(GeomIndex {
             id,

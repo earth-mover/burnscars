@@ -22,14 +22,17 @@
 //! - Two geometries can cover the same cell, so the full object is a sparse
 //!   `(row, col, id)` tensor. One geometry has at most one record per cell.
 
+mod burner;
 mod coverage;
 mod error;
 mod geom;
 mod grid;
-#[expect(dead_code, reason = "first used by Tasks 7-8")]
+#[expect(dead_code, reason = "line and point accessors are first used by Task 10")]
 mod input;
 mod output;
+mod scratch;
 
+pub use burner::{Burner, Mode, bbox};
 pub use error::{At, BurnError, GeomKind};
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span};
 pub use output::{
