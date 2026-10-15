@@ -179,15 +179,19 @@ impl Lattice {
     pub fn new(x0: f64, y0: f64, dx: f64, dy: f64) -> Result<Self, GridError>;
     pub fn x_edge(&self, col: i64) -> f64;   // x0 + col as f64 * dx
     pub fn y_edge(&self, row: i64) -> f64;   // y0 - row as f64 * dy
-    /// The column c with x_edge(c) <= x < x_edge(c + 1). See "Index authority".
-    pub fn col_of(&self, x: f64) -> i64;
-    /// The row r with y_edge(r + 1) < y <= y_edge(r). See "Index authority".
-    pub fn row_of(&self, y: f64) -> i64;
 }
 
 impl Grid {
     /// Full grid = window = `rows` x `cols`.
+    /// Do not use this for a chunk: a chunk made here closes its own right and bottom
+    /// edges, so a point on a seam goes into two chunks. Use `window()` for chunks.
     pub fn new(lattice: Lattice, rows: Range<u32>, cols: Range<u32>) -> Result<Self, GridError>;
+    /// Column of `x` against the full grid. See "Index authority".
+    /// Returns `full_cols.start - 1` left of the full grid and `full_cols.end` right of it.
+    pub fn col_of(&self, x: f64) -> i64;
+    /// Row of `y` against the full grid. See "Index authority".
+    /// Returns `full_rows.start - 1` above the full grid and `full_rows.end` below it.
+    pub fn row_of(&self, y: f64) -> i64;
     /// Same meaning as controlledburn `GridSpec`: x0 = xmin, y0 = ymax,
     /// dx = (xmax - xmin) / ncol, dy = (ymax - ymin) / nrow, rows 0..nrow, cols 0..ncol.
     pub fn from_extent(xmin: f64, ymin: f64, xmax: f64, ymax: f64,
@@ -212,11 +216,20 @@ Rules:
 
 *** Index authority
 
-The cell edges are the authority. ~col_of(x)~ computes ~c = floor((x - x0)/dx)~ and
-then corrects ~c~ by ±1 until ~x_edge(c) <= x < x_edge(c + 1)~. ~row_of(y)~ does the
-same with ~y_edge~. Thus the index of a coordinate always agrees with the cell box that
-contains it. Points, the walker start cell, the processing region, and the approx sweep
-all use ~col_of~ and ~row_of~.
+The cell edges are the authority. ~Grid::col_of(x)~, with ~[s, e) = full_cols~, is
+exactextract ~Grid<infinite_extent>::get_column~ (~src/grid.h~) on the lattice:
+1. If ~x < x_edge(s)~, return ~s - 1~. If ~x > x_edge(e)~, return ~e~.
+2. If ~x == x_edge(e)~, return ~e - 1~ (see [[*Closed edges of the full grid][Closed edges of the full grid]]).
+3. Else ~c = floor((x - x0)/dx)~, clamped to ~[s, e - 1]~. Then correct ~c~ by ±1,
+   inside ~[s, e - 1]~, until ~x_edge(c) <= x < x_edge(c + 1)~.
+
+~Grid::row_of(y)~ is the same with ~y_edge~ and ~full_rows~ (above the grid gives
+~s - 1~, below it gives ~e~, ~y == y_edge(e)~ gives ~e - 1~).
+- Steps 1 and 2 bound ~x~ before any cast, so a large finite coordinate (for example
+  ~1e300~) cannot overflow, and the correction always stops.
+- The index of a coordinate always agrees with the cell box that contains it.
+- Points, the walker start cell, the processing region, and the approx sweep all use
+  ~col_of~ and ~row_of~.
 
 *** Closed edges of the full grid
 
@@ -372,8 +385,9 @@ pub struct RowMajorError { pub row: u32, pub rows: Range<u32> }
 #+end_src
 
 - ~part~ is the index of the component in a Multi geometry, and 0 for a single
-  geometry. ~ring~ is the index of the ring in its polygon (0 = exterior). For points,
-  ~vertex~ is 0 and ~ring~ is 0.
+  geometry. ~ring~ is the index of the ring in its polygon (0 = exterior).
+- For a line, ~ring~ is 0 and ~vertex~ is the vertex index in the part. For a point,
+  ~ring~ and ~vertex~ are 0.
 - ~Internal~ replaces a panic: for example, a walker index that leaves the walker grid.
   The library code never panics on input data.
 - ~Burner::burn_into~ stops at the first error. An orchestrator that wants "skip and
@@ -400,7 +414,8 @@ The core is sequential. An orchestrator runs it in parallel like this:
 - *Feature-parallel*: each worker has its own ~Burner~ and ~BurnResult~, and burns a
   range of ~(id, geometry)~ pairs onto the full grid. The merge is a concatenation.
 - *Raster-parallel* (brix chunks): each worker burns the geometries whose ~bbox~ meets
-  its chunk onto ~grid.window(rows, cols)~. Each chunk output is complete for its
+  its chunk onto ~grid.window(rows, cols)~. Make chunks with ~window()~, not with
+  ~Grid::new~, so that every chunk keeps the full-grid edge rules. Each chunk output is complete for its
   window, so no merge is necessary.
 - ~Grid~ is ~Clone + Send + Sync~. ~Burner~ and ~BurnResult~ are ~Send~.
 - Known v1 limit: each chunk scans every vertex of each geometry that meets it, so a
@@ -437,12 +452,13 @@ ported item has a docstring that names its upstream file and function (see
 
 Source: exactextract ~processing_region~ and ~get_geometry_grid~
 (~src/raster_cell_intersection.cpp~).
-- The region is the union of the component envelopes, intersected with the grid
-  window.
-- If the region is empty, the geometry gives no output.
+- The region starts from the union of the component envelopes (finite coordinates).
 - On the lattice, the column range is ~col_of(xmin) - 1 ..= col_of(xmax) + 1~. The row
   range is ~row_of(ymax) - 1 ..= row_of(ymin) + 1~: ~ymax~ gives the low row index,
   because row 0 is at the top. Both ranges are then clamped to the window.
+- The empty test runs on these index ranges, after the margin and the clamp. The
+  region is empty only if a clamped range is empty. Thus an envelope with zero width
+  or zero height (a horizontal or vertical line) is not empty.
 - The one-cell margin replaces the floating-point fixes in exactextract
   ~Grid::shrink_to_fit~ (~src/grid.h~). It makes sure that the region contains the
   cell of every vertex near the envelope, even if that vertex is a few ulp from a wall.
@@ -474,11 +490,12 @@ required, and each one has a regression test:
    ~k = round((x - x0)/dx)~, and the edge is ~x_edge(k)~. Change from controlledburn:
    there is *no range test*. controlledburn snaps only to edges inside the padded
    subgrid, which depends on the window and breaks partition equality.
-2. *Start cell* from the first coordinate, with exactextract ~Grid::get_row~ /
-   ~get_column~ semantics on the walker grid: a coordinate left of (or above) the
-   region goes to padding 0, and a coordinate right of (or below) it goes to padding
-   ~n + 1~. Inside, the cell comes from ~col_of~ / ~row_of~. The closed-edge rule
-   applies only at the edges of the full grid (see [[*Closed edges of the full grid][Closed edges of the full grid]]).
+2. *Start cell* from the first coordinate, with one formula:
+   ~local_col = clamp(col_of(x) - region_col_start + 1, 0, n + 1)~, and the same for
+   rows with ~row_of~. This is exactextract ~Grid::get_row~ / ~get_column~ semantics on
+   the walker grid: outside the region the coordinate goes to padding 0 or ~n + 1~. The
+   closed-edge rule applies only at the edges of the full grid (see
+   [[*Closed edges of the full grid][Closed edges of the full grid]]).
 3. *Point location*: ~strictly_contains~ means inside, ~contains~ means on the
    boundary, and anything else is outside.
 4. *Exit crossing*: ~Box::crossing(from, next)~, where ~from~ is the previous original
@@ -574,8 +591,10 @@ the exterior envelope only. The union gives one record per cell, which matches t
 coverage path.
 - The row range is the envelope rows clamped to the window:
   ~row_lo = max(r0, row_of(ymax))~ and ~row_hi = min(r1 - 1, row_of(ymin))~.
-- For each ring, the winding factor is +1 if the ring is CCW, else -1. It is negated for
-  a hole.
+- The approx path reads the normalized rings (all CCW, see [[*Input normalization (~input.rs~)][Input normalization]]).
+  The winding factor is +1 for an exterior ring and -1 for a hole, the same as in the
+  coverage path. controlledburn tests ~is_ccw~ here because it does not normalize; the
+  result is the same.
 - For each edge ~(x0e, y0e) -> (x1e, y1e)~ with ~y0e != y1e~: take ~ya < yb~. The rows
   are those with ~ya < y_mid(r) <= yb~, where ~y_mid(r) = y0 - (r + 0.5)*dy~:
   ~e_lo = max(row_lo, ceil((y0 - yb)/dy - 0.5 - 1e-10))~ and
@@ -672,16 +691,27 @@ The test files in ~tests/~:
   per ~(row, col, id)~. The area is conserved.
 - ~parity.rs~: reads ~fixtures/geometries.csv~ and ~fixtures/expected.csv~ (copied from
   controlledburn ~fixtures/~) and checks the aggregates with the tolerances in the file.
+  A case whose aggregate changes because of a deliberate difference (the union approx
+  sweep, the merge of line parts) goes into ~oracle/known_diffs.toml~, in a ~[parity]~
+  table, with the reason.
+- The global lattice snap moves a vertex by at most ~1e-9~ of a cell. This is inside
+  the oracle and area tolerances, so it needs no known-difference entry.
 - ~oracle.rs~: see [[*Oracle][Oracle]].
 - ~partition.rs~ (proptest): random valid polygons, lines, points and grids. The
   feature-split burn and the tile-split burn (random chunk sizes) each give the same
   expanded form as the full burn (see [[*Output order and determinism][Output order and determinism]]). Bit-for-bit
   equality of the values is the target. If the walker crossing arithmetic makes this
-  impossible at seams, stop and report to the user. The proposed fallback is equal cell
-  sets and ~|Δf| <= 1e-6~.
+  impossible at seams, stop and report to the user. The proposed fallback compares one
+  merged expanded form of ~Runs~ and ~Edges~ (run cells as 1), with the oracle rule:
+  remove cells with ~f < 1e-6~ on both sides, then require equal cell sets and
+  ~|Δf| <= 1e-6~. A cell that moves between ~Edges~ and ~Runs~ at the ~1 - 1e-6~ limit
+  is then not a difference.
 - ~fraction.rs~ (unit or proptest): O3 against the reference version (see [[*Storage][Storage]]).
 - ~errors.rs~: each ~BurnError~, ~GridError~ and ~RowMajorError~ variant, and the
-  truncation of ~out~ after an error.
+  truncation of ~out~ after an error. Exempt: ~Internal~ and ~WalkDiverged~, which valid
+  input cannot cause. Their messages are covered by a unit test of the ~Display~ text.
+- ~regression.rs~ also has a test with coordinates of ~±1e300~ (no panic, no overflow)
+  and a test with a horizontal and a vertical line (records are emitted).
 - ~alloc.rs~: its own test binary with exactly one test. A counting global allocator
   (test only) counts allocations. The test builds the input before the measured part.
   After a warm-up burn, a second ~burn_into~ of the same input into a cleared
