@@ -78,20 +78,29 @@ pub(crate) fn hex(s: &str) -> Vec<u8> {
     (0..s.len() / 2).filter_map(|i| u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()).collect()
 }
 
+/// `[[diff]]` entries of `oracle/known_diffs.toml` for `table`, as (case, reason).
+/// A missing or bad file, or an entry with no `table`, `case` or `reason`, fails the test.
+#[expect(clippy::panic, reason = "test helper: a bad known_diffs.toml is a test bug")]
 pub(crate) fn known_diffs(table: &str) -> Vec<(String, String)> {
-    let text =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/oracle/known_diffs.toml"))
-            .unwrap_or_default();
-    let doc: toml::Table = text.parse().unwrap_or_default();
-    doc.get("diff")
-        .and_then(toml::Value::as_array)
-        .into_iter()
-        .flatten()
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/oracle/known_diffs.toml");
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    let doc: toml::Table = text.parse().unwrap_or_else(|e| panic!("cannot parse {path}: {e}"));
+    let entries = match doc.get("diff") {
+        None => return Vec::new(),
+        Some(v) => {
+            v.as_array().unwrap_or_else(|| panic!("{path}: `diff` is not an array of tables"))
+        }
+    };
+    let field = |d: &toml::Value, k: &str| -> String {
+        match d.get(k).and_then(toml::Value::as_str) {
+            Some(s) if !s.trim().is_empty() => s.to_owned(),
+            _ => panic!("{path}: a [[diff]] entry has no `{k}`: {d}"),
+        }
+    };
+    entries
+        .iter()
         .filter_map(|d| {
-            let t = d.get("table")?.as_str()?;
-            let case = d.get("case")?.as_str()?.to_owned();
-            let reason = d.get("reason")?.as_str()?.to_owned();
-            assert!(!reason.trim().is_empty(), "known diff {case} has no reason");
+            let (t, case, reason) = (field(d, "table"), field(d, "case"), field(d, "reason"));
             (t == table).then_some((case, reason))
         })
         .collect()
