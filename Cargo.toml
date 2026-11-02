@@ -6,7 +6,12 @@ rust-version = "1.98"
 license = "Apache-2.0"
 description = "Sparse rasterization of polygons, lines and points with exact coverage fractions; a Rust port of controlledburn"
 readme = "README.md"
-publish = false
+repository = "https://github.com/earth-mover/burnscars"
+documentation = "https://docs.rs/burnscars"
+keywords = ["rasterization", "polygon", "coverage", "geospatial", "gis"]
+categories = ["science::geo", "algorithms"]
+# Fixtures, the oracle and the benches stay out of the published crate.
+include = ["/src", "/LICENSE", "/NOTICE", "/README.md"]
 
 [dependencies]
 geo-traits = { version = "0.3", default-features = false }

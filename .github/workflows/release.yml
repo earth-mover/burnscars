@@ -1,0 +1,65 @@
+name: Release
+
+# Push a `vX.Y.Z` tag that matches the version in Cargo.toml to publish to crates.io.
+on:
+  push:
+    tags: ["v*"]
+
+# Never cancel a release halfway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  publish:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment to gate releases.
+    environment: release
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # crates.io trusted publishing
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Check the tag matches the crate version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+      - id: toolchain
+        run: sed -n 's/^channel = "\(.*\)"$/channel=\1/p' rust-toolchain.toml >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-06)
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: just,cargo-nextest
+      # The tag may point at a commit CI never saw, so test before publishing.
+      - run: just test
+      - run: just doctest
+      # Builds the packaged crate on its own, so a missing `include` fails here.
+      - run: cargo publish --dry-run --locked
+      # Exchanges the job's OIDC token for a short-lived crates.io token.
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
