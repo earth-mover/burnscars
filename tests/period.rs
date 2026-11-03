@@ -1,4 +1,4 @@
-//! Signed steps and a longitude period: lon/lat bricks in the caller's own indices.
+//! South-up rows and a longitude period: lon/lat bricks in the caller's own indices.
 
 #![expect(clippy::expect_used, reason = "test code: a failed burn fails the test")]
 
@@ -6,7 +6,10 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use burnscars::{BurnError, BurnResult, Burner, Col, GeomId, Grid, Lattice, Mode, Pos, Row, Span};
+use burnscars::{
+    BurnError, BurnResult, Burner, Col, GeomId, Grid, Lattice, Mode, Pos, Row, Span, XAxis, YAxis,
+    YOrigin,
+};
 use common::{expanded, ls, poly};
 use geo_types::{Geometry, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Rect};
 
@@ -38,8 +41,12 @@ fn cells(m: &Expanded) -> Vec<((u8, u32, u32), f32)> {
     m.iter().map(|(&(t, _, r, c), v)| ((t, r, c), f32::from_bits(v[0]))).collect()
 }
 
-/// lat centres 10, 20, 30 (row 0 south): y0 = 5 is the south edge, dy = -10.
-const SOUTH: f64 = 5.0;
+/// Longitude step 10 from the west edge `x0`, period 360; latitude centres 10, 20, 30
+/// (row 0 south): y0 = 5 is the south edge.
+fn lonlat(x0: f64) -> Lattice {
+    let x = XAxis::new(x0, 10.0).and_then(|x| x.with_period(360.0)).expect("x");
+    Lattice::new(x, YAxis::new(5.0, 10.0, YOrigin::SouthUp).expect("y"))
+}
 
 fn zone() -> Geometry<f64> {
     Rect::new((-175.0, 15.0), (-165.0, 35.0)).into()
@@ -48,7 +55,7 @@ fn zone() -> Geometry<f64> {
 /// The brick: lon centres 170..200 on a 0..360 grid; the zone is in [-180, 180).
 #[test]
 fn the_brick_burns_in_its_own_indices() {
-    let l = Lattice::new(165.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(165.0);
     let g = window(l, 3, 4, (0, 3), (0, 4));
     assert_eq!(runs(&burn(Mode::Approx, &g, &[zone()])), [(2, 2..3), (1, 2..3)]);
     let cov = cells(&expanded(&burn(Mode::Coverage, &g, &[zone()])));
@@ -58,7 +65,7 @@ fn the_brick_burns_in_its_own_indices() {
 /// The same brick as a window of a global 0..360 lattice (centres 0..350), across 180 or not.
 #[test]
 fn a_window_of_the_global_lattice_gives_global_indices() {
-    let l = Lattice::new(-5.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(-5.0);
     let across = window(l, 3, 36, (0, 3), (17, 21));
     assert_eq!(runs(&burn(Mode::Approx, &across, &[zone()])), [(2, 19..20), (1, 19..20)]);
     let east = window(l, 3, 36, (0, 3), (19, 23));
@@ -70,7 +77,7 @@ fn a_window_of_the_global_lattice_gives_global_indices() {
 /// A zone split at 180 (two parts) fills the cell that the seam cuts: 0.5 from each part.
 #[test]
 fn a_zone_split_at_the_seam_fills_the_cell_across_it() {
-    let l = Lattice::new(-5.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(-5.0);
     let g = window(l, 3, 36, (0, 3), (17, 21));
     let split = Geometry::MultiPolygon(MultiPolygon::new(vec![
         poly(&[(175.0, 15.0), (180.0, 15.0), (180.0, 35.0), (175.0, 35.0), (175.0, 15.0)], &[]),
@@ -93,7 +100,7 @@ fn a_zone_split_at_the_seam_fills_the_cell_across_it() {
 /// A zone in 0..360 on a [-180, 180) lattice: its copy one period west fills column 0.
 #[test]
 fn a_zone_past_180_burns_on_a_lattice_from_minus_180() {
-    let l = Lattice::new(-185.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(-185.0);
     let g = window(l, 3, 36, (0, 3), (0, 36));
     let z: Geometry<f64> = Rect::new((175.0, 15.0), (185.0, 35.0)).into();
     let cov = cells(&expanded(&burn(Mode::Coverage, &g, &[z])));
@@ -106,7 +113,7 @@ fn a_zone_past_180_burns_on_a_lattice_from_minus_180() {
 /// into column 0 only, as a point on the near edge does.
 #[test]
 fn a_point_on_the_seam_is_in_one_cell() {
-    let l = Lattice::new(0.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(0.0);
     let g = window(l, 3, 36, (0, 3), (0, 36));
     let pts = |x: f64| Geometry::MultiPoint(MultiPoint::new(vec![Point::new(x, 20.0)]));
     for (x, col) in [(0.0, 0), (360.0, 0), (-360.0, 0), (-180.0, 18), (185.0, 18), (-5.0, 35)] {
@@ -119,9 +126,10 @@ fn a_point_on_the_seam_is_in_one_cell() {
 /// [-180, 180) lattice with no period, bit for bit.
 #[test]
 fn a_window_east_of_180_matches_a_shifted_lattice() {
-    let wrapped =
-        Lattice::new(0.0, 40.0, 10.0, 10.0).and_then(|l| l.with_period(360.0)).expect("l");
-    let plain = Lattice::new(-180.0, 40.0, 10.0, 10.0).expect("l");
+    let y = YAxis::new(40.0, 10.0, YOrigin::NorthUp).expect("y");
+    let x = XAxis::new(0.0, 10.0).and_then(|x| x.with_period(360.0)).expect("x");
+    let wrapped = Lattice::new(x, y);
+    let plain = Lattice::new(XAxis::new(-180.0, 10.0).expect("x"), y);
     let a = window(wrapped, 4, 36, (0, 4), (19, 25));
     let b = window(plain, 4, 36, (0, 4), (1, 7));
     let geoms: Vec<Geometry<f64>> = vec![
@@ -149,7 +157,7 @@ fn a_window_east_of_180_matches_a_shifted_lattice() {
 
 #[test]
 fn a_geometry_wider_than_the_period_is_refused() {
-    let l = Lattice::new(0.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(0.0);
     let g = window(l, 3, 36, (0, 3), (0, 36));
     let wide: Geometry<f64> = Rect::new((-180.0, 15.0), (181.0, 35.0)).into();
     let e = Burner::new(Mode::Coverage).burn(&g, [(GeomId(4), &wide)]).expect_err("too wide");
@@ -162,7 +170,7 @@ fn a_geometry_wider_than_the_period_is_refused() {
 /// `col_of` and `row_of` answer in the caller's indices.
 #[test]
 fn col_of_and_row_of_use_the_callers_indices() {
-    let l = Lattice::new(0.0, SOUTH, 10.0, -10.0).and_then(|l| l.with_period(360.0)).expect("l");
+    let l = lonlat(0.0);
     let g = window(l, 3, 36, (0, 3), (0, 36));
     assert_eq!(g.col_of(-175.0), Pos::In(Col(18)));
     assert_eq!(g.col_of(5.0), Pos::In(Col(0)));
@@ -170,10 +178,25 @@ fn col_of_and_row_of_use_the_callers_indices() {
     assert_eq!(g.row_of(30.0), Pos::In(Row(2)));
     assert_eq!(g.row_of(40.0), Pos::After);
     assert_eq!(g.row_of(0.0), Pos::Before);
-    let west = Lattice::new(40.0, SOUTH, -10.0, -10.0).expect("l");
-    let w = window(west, 3, 4, (0, 3), (0, 4));
-    assert_eq!(w.col_of(35.0), Pos::In(Col(0)));
-    assert_eq!(w.col_of(5.0), Pos::In(Col(3)));
-    assert_eq!(w.col_of(45.0), Pos::Before);
-    assert_eq!(w.col_of(-1.0), Pos::After);
+}
+
+/// A point on the seam of a full-period grid goes into one tile only: column 0, as in the
+/// full burn, and not also the last column of the tile that holds the far edge.
+#[test]
+fn a_point_on_the_seam_is_in_one_tile() {
+    let pts = Geometry::MultiPoint(MultiPoint::new(vec![Point::new(360.0, 20.0)]));
+    let full = cells(&expanded(&burn(
+        Mode::Coverage,
+        &window(lonlat(0.0), 3, 36, (0, 3), (0, 36)),
+        std::slice::from_ref(&pts),
+    )));
+    assert_eq!(full, [((2, 1, 0), 0.0)]);
+    let west = burn(
+        Mode::Coverage,
+        &window(lonlat(0.0), 3, 36, (0, 3), (0, 1)),
+        std::slice::from_ref(&pts),
+    );
+    let east = burn(Mode::Coverage, &window(lonlat(0.0), 3, 36, (0, 3), (35, 36)), &[pts]);
+    assert_eq!(cells(&expanded(&west)), full);
+    assert!(east.is_empty(), "{east:?}");
 }

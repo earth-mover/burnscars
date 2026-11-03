@@ -289,24 +289,20 @@ impl BurnResult {
         });
     }
 
-    /// Maps the records after `s` to other indices, in place.
-    pub(crate) fn map_tail(&mut self, s: GeomStart, rows: Flip, cols: Flip) {
-        let r = &mut self.runs;
-        for row in r.row.get_mut(s.runs..).into_iter().flatten() {
-            *row = rows.index(*row);
+    /// Maps the rows of the records after `s` to the caller's rows, in place.
+    pub(crate) fn map_tail(&mut self, s: GeomStart, rows: Flip) {
+        if !rows.is_flip() {
+            return;
         }
-        let ends = r.col_start.iter_mut().zip(r.col_end.iter_mut()).skip(s.runs);
-        for (a, b) in ends {
-            (*a, *b) = cols.range(*a, *b);
-        }
-        let cells = [
-            (&mut self.edges.row, &mut self.edges.col, s.edges),
-            (&mut self.lines.row, &mut self.lines.col, s.lines),
-            (&mut self.points.row, &mut self.points.col, s.points),
+        let tails = [
+            (&mut self.runs.row, s.runs),
+            (&mut self.edges.row, s.edges),
+            (&mut self.lines.row, s.lines),
+            (&mut self.points.row, s.points),
         ];
-        for (row, col, from) in cells {
-            for (r, c) in row.iter_mut().zip(col.iter_mut()).skip(from) {
-                (*r, *c) = (rows.index(*r), cols.index(*c));
+        for (row, from) in tails {
+            for r in row.get_mut(from..).into_iter().flatten() {
+                *r = rows.index(*r);
             }
         }
     }

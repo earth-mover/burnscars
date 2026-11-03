@@ -7,7 +7,7 @@
 //! (all components) replaces controlledburn's sweep per component.
 
 use crate::error::BurnError;
-use crate::grid::{Col, GeomId, Grid, Pos, Span, to_f64};
+use crate::grid::{Col, GeomId, NorthUpGrid, Pos, Span, to_f64};
 use crate::input::InputBuf;
 use crate::output::{BurnResult, Emit};
 
@@ -34,7 +34,7 @@ pub(crate) struct ApproxState {
 }
 
 /// One intercept of the controlledburn approx sweep. Left of centre is `x <= x_mid`.
-pub(crate) fn step(st: &mut ApproxState, ix: &Icpt, grid: &Grid) -> Option<Span<Col>> {
+pub(crate) fn step(st: &mut ApproxState, ix: &Icpt, grid: &NorthUpGrid) -> Option<Span<Col>> {
     let wc = grid.cols();
     let (c0, c1) = (wc.start().0, wc.end().0);
     let col = match grid.col_of(ix.x) {
@@ -71,7 +71,7 @@ pub(crate) fn step(st: &mut ApproxState, ix: &Icpt, grid: &Grid) -> Option<Span<
 /// on the lattice, all components in one sweep.
 pub(crate) fn burn(
     input: &InputBuf,
-    grid: &Grid,
+    grid: &NorthUpGrid,
     id: GeomId,
     s: &mut ApproxScratch,
     out: &mut BurnResult,
@@ -101,7 +101,6 @@ pub(crate) fn burn(
 
     s.icpt.clear();
     let mut seq = 0_u32;
-    let (y0, dy) = (l.y0(), l.dy());
     for ring in input.rings() {
         let factor = ring.role.sign_i32(); // rings are CCW after normalization
         for w in ring.coords.windows(2) {
@@ -111,9 +110,9 @@ pub(crate) fn burn(
             }
             let (ya, yb) = if p.y < q.y { (p.y, q.y) } else { (q.y, p.y) };
             // Rows with ya < y_mid <= yb (top-inclusive, bottom-exclusive).
-            let e_lo = ceil_clamped((y0 - yb) / dy - 0.5 - 1e-10, row_lo, row_hi + 1).max(row_lo);
-            let e_hi = (ceil_clamped((y0 - ya) / dy - 0.5 - 1e-10, row_lo - 1, row_hi + 1) - 1)
-                .min(row_hi);
+            let e_lo = ceil_clamped(l.y_index(yb) - 0.5 - 1e-10, row_lo, row_hi + 1).max(row_lo);
+            let e_hi =
+                (ceil_clamped(l.y_index(ya) - 0.5 - 1e-10, row_lo - 1, row_hi + 1) - 1).min(row_hi);
             if e_lo > e_hi {
                 continue;
             }
@@ -171,7 +170,8 @@ mod tests {
 
     #[test]
     fn step_follows_the_centre_rule() {
-        let g = Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10).expect("grid");
+        let g =
+            crate::Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10).expect("grid").north_up().grid;
         let mut st = ApproxState::default();
         let enter = Icpt { row: 0, x: 2.5, delta: 1, seq: 0 };
         assert_eq!(step(&mut st, &enter, &g), None);

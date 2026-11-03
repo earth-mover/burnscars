@@ -11,7 +11,7 @@ use crate::coverage::{fraction::to_f32, walk::walk};
 use crate::error::At;
 use crate::error::BurnError;
 use crate::geom::walker_grid::WalkerGrid;
-use crate::grid::{GeomId, Grid};
+use crate::grid::{GeomId, NorthUpGrid};
 use crate::input::InputBuf;
 use crate::output::BurnResult;
 use crate::output::Emit;
@@ -22,7 +22,7 @@ use crate::scratch::WalkScratch;
 /// open walks, all traversals of a cell summed in visit order.
 pub(crate) fn burn(
     input: &InputBuf,
-    grid: &Grid,
+    grid: &NorthUpGrid,
     id: GeomId,
     s: &mut WalkScratch,
     out: &mut BurnResult,

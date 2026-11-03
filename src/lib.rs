@@ -56,7 +56,7 @@ mod sort;
 
 pub use burner::{Burner, Mode, bbox};
 pub use error::{At, BurnError, GeomKind};
-pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span};
+pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span, XAxis, YAxis, YOrigin};
 pub use output::{
     BurnResult, EdgeRef, Edges, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor,
     RowMajorError, RunRef, Runs,

@@ -27,7 +27,7 @@ pub(crate) fn covered_area(r: &BurnResult, g: &Grid) -> f64 {
     let l = g.lattice();
     let runs: f64 = r.runs.iter().map(|x| f64::from(x.cols.width())).sum();
     let edges: f64 = r.edges.iter().map(|e| f64::from(e.fraction)).sum();
-    l.dx() * l.dy() * (runs + edges)
+    l.x().dx() * l.y().dy() * (runs + edges)
 }
 
 /// Expanded form: (table, id, row, col) -> value bits. Runs give 1.0 per cell.

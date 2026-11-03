@@ -379,7 +379,7 @@ fn area(res: &BurnResult, g: &G) -> f64 {
     let l = *g.grid().lattice();
     let runs: f64 = res.runs.iter().map(|x| f64::from(x.cols.width())).sum();
     let edges: f64 = res.edges.iter().map(|e| f64::from(e.fraction)).sum();
-    l.dx() * l.dy() * (runs + edges)
+    l.x().dx() * l.y().dy() * (runs + edges)
 }
 
 fn fmt_ring(r: &[P]) -> String {

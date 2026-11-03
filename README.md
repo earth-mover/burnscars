@@ -36,9 +36,11 @@ geometry or by grid chunk and run it in parallel.
 
 Four tables in struct-of-arrays form: `runs` (interior intervals), `edges` (boundary
 cells with a coverage fraction), `lines` (length in cell), `points`. Indices are
-global, 0-based lattice indices; `col_end` is exclusive. A negative lattice step
-flips its axis (rows run north, or columns run west), and the indices follow it. See the crate docs for the
-relation to CSR and CSC sparse matrices.
+global, 0-based lattice indices; `col_end` is exclusive. Both lattice steps are > 0.
+Columns run east. `YOrigin::NorthUp` puts row 0 at the north edge, and
+`YOrigin::SouthUp` puts it at the south edge. `Lattice::from_geotransform` takes a GDAL
+geotransform (`dy < 0` is north-up). See the crate docs for the relation to CSR and CSC
+sparse matrices.
 
 ## Development
 
@@ -60,7 +62,7 @@ relation to CSR and CSC sparse matrices.
   before the change, and record each changed fixture as a deliberate difference.
 - Merge adjacent one-cell runs and interior runs in a row.
 - A performance regression gate on the benchmarks.
-- Antimeridian. `Lattice::with_period` burns shifted copies at k·360, so convention A
+- Antimeridian. `XAxis::with_period` burns shifted copies at k·360, so convention A
   (split at ±180, as a multipolygon) and B (continuous past 180) work. To do: C, jumps
   at ±180 (unwrap where |Δx| > 180, then B); D, rings that enclose a pole (close the
   ring through the pole).

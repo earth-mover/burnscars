@@ -5,7 +5,7 @@ use geo_traits::GeometryTrait;
 use crate::approx;
 use crate::coverage;
 use crate::error::BurnError;
-use crate::grid::{GeomId, Grid};
+use crate::grid::{GeomId, Grid, NorthUp, NorthUpGrid};
 use crate::input::{Loaded, for_each_xy};
 use crate::output::{BurnResult, GeomStart};
 use crate::scratch::Scratch;
@@ -76,10 +76,11 @@ impl Burner {
     ) -> Result<(), BurnError> {
         let start = out.start_geom();
         let loaded = self.scratch.input.load(g, id)?;
-        if grid.lattice().is_north_up() {
-            self.burn_loaded(loaded, grid, id, out)?;
+        let n = grid.north_up();
+        if n.is_identity() {
+            self.burn_loaded(loaded, &n.grid, id, out)?;
         } else {
-            self.burn_mapped(loaded, grid, id, start, out)?;
+            self.burn_mapped(loaded, &n, id, start, out)?;
         }
         out.end_geom(id, start);
         Ok(())
@@ -89,7 +90,7 @@ impl Burner {
     fn burn_loaded(
         &mut self,
         loaded: Loaded,
-        grid: &Grid,
+        grid: &NorthUpGrid,
         id: GeomId,
         out: &mut BurnResult,
     ) -> Result<(), BurnError> {
@@ -106,17 +107,16 @@ impl Burner {
         Ok(())
     }
 
-    /// Signed steps and a period: burns on the north-up grid, one copy per period that
-    /// meets the geometry, then maps the records to the caller's indices.
+    /// A south-up grid or a period: burns on the north-up grid, one copy per period that
+    /// meets the geometry, then maps the rows to the caller's indices.
     fn burn_mapped(
         &mut self,
         loaded: Loaded,
-        grid: &Grid,
+        n: &NorthUp,
         id: GeomId,
         start: GeomStart,
         out: &mut BurnResult,
     ) -> Result<(), BurnError> {
-        let n = grid.north_up();
         let (period, ks) = match (n.period, self.scratch.input.envelope()) {
             (Some(period), Some(env)) => {
                 let width = env.xmax - env.xmin;
@@ -124,8 +124,12 @@ impl Burner {
                     return Err(BurnError::WiderThanPeriod { id, width, period });
                 }
                 let l = n.grid.lattice();
-                let west = l.x_edge(i64::from(n.grid.cols().start().0));
-                let east = l.x_edge(i64::from(n.grid.cols().end().0));
+                // Points need every copy on the full grid: the seam rule compares the
+                // hits of two copies, and a window can hold only one of them.
+                let cols =
+                    if loaded == Loaded::Points { n.grid.full_cols() } else { n.grid.cols() };
+                let west = l.x_edge(i64::from(cols.start().0));
+                let east = l.x_edge(i64::from(cols.end().0));
                 // Copy k covers [west + k p, east + k p]; keep each copy that meets the envelope.
                 let lo = to_i64(((env.xmin - east) / period).ceil());
                 let hi = to_i64(((env.xmax - west) / period).floor());
@@ -147,7 +151,7 @@ impl Burner {
                 out.merge_tail(id, start);
             }
         }
-        out.map_tail(start, n.rows, n.cols);
+        out.map_tail(start, n.rows);
         Ok(())
     }
 }

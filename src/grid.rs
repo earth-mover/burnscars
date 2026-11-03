@@ -99,8 +99,10 @@ pub enum Pos<T> {
 pub enum GridError {
     #[error("non-finite lattice value: {0}")]
     NonFinite(&'static str),
-    #[error("resolution must be nonzero: dx = {dx}, dy = {dy}")]
-    Resolution { dx: f64, dy: f64 },
+    #[error("resolution must be > 0: {axis} = {step}")]
+    Resolution { axis: &'static str, step: f64 },
+    #[error("geotransform is rotated: rx = {rx}, ry = {ry}")]
+    Rotated { rx: f64, ry: f64 },
     #[error("period must be finite and > 0: {0}")]
     Period(f64),
     #[error("empty span: start {start}, end {end}")]
@@ -111,78 +113,30 @@ pub enum GridError {
     Extent(&'static str),
 }
 
-/// Infinite regular lattice. Column edge k is `x0 + k*dx`; row edge k is `y0 - k*dy`.
-///
-/// The signs of the steps give the index directions:
-///
-/// - `dx > 0`: `x0` is the west edge and columns run east. `dx < 0`: `x0` is the east edge
-///   and columns run west.
-/// - `dy > 0`: `y0` is the north edge and rows run south. `dy < 0`: `y0` is the south edge
-///   and rows run north.
-///
-/// So cell (r, c) is the box between `x_edge(c)`, `x_edge(c+1)`, `y_edge(r)` and
-/// `y_edge(r+1)`, for every sign. Every output record is in these indices.
-///
-/// The burn result does not depend on the signs: a burn on a flipped lattice gives the
-/// records of the positive-step lattice over the same cells, with the indices flipped.
-/// The edge rules are geographic, as on the positive-step lattice (a point on a shared
-/// edge goes into the cell to its east and to its south).
-///
-/// [`Lattice::with_period`] makes x periodic (a longitude): geometry x and cell x then
-/// compare modulo the period.
-///
-/// # Example
-///
-/// A brick of 3 rows by 4 columns: latitude centres 10, 20, 30 (ascending, so row 0 is
-/// south), longitude centres 170, 180, 190, 200 (a 0..360 grid). The zone is in
-/// [-180, 180).
-///
-/// ```
-/// use burnscars::{Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span};
-/// use geo_types::Rect;
-///
-/// // x0 = 165 is the west edge; y0 = 5 is the south edge, so dy < 0.
-/// let lattice = Lattice::new(165.0, 5.0, 10.0, -10.0)?.with_period(360.0)?;
-/// let grid = Grid::new(lattice, Span::new(Row(0), Row(3))?, Span::new(Col(0), Col(4))?)?;
-/// let zone = Rect::new((-175.0, 15.0), (-165.0, 35.0));
-/// let out = Burner::new(Mode::Approx).burn(&grid, [(GeomId(0), zone)])?;
-/// let runs: Vec<(u32, std::ops::Range<u32>)> =
-///     out.runs.iter().map(|r| (r.row.0, r.cols.range())).collect();
-/// // The cells at longitude 190, latitude 30 and 20.
-/// assert_eq!(runs, [(2, 2..3), (1, 2..3)]);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
+/// Which edge `y0` is, and the direction in which the rows run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YOrigin {
+    /// `y0` is the north edge. Row 0 is the north row and rows run south (GDAL `dy < 0`).
+    NorthUp,
+    /// `y0` is the south edge. Row 0 is the south row and rows run north (GDAL `dy > 0`),
+    /// e.g. ascending latitude.
+    SouthUp,
+}
+
+/// The x axis of a [`Lattice`]. Columns always run east: `x0` is the west edge of column 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lattice {
+pub struct XAxis {
     x0: f64,
-    y0: f64,
     dx: f64,
-    dy: f64,
-    /// 1 / dx and 1 / dy: the first guess of `col_of` / `row_of`, which the edge loops
-    /// then correct, so a rounding difference from a division cannot change the result.
-    inv_dx: f64,
-    inv_dy: f64,
     period: Option<f64>,
 }
 
-#[expect(clippy::cast_precision_loss, reason = "lattice indices stay below 2^53")]
-pub(crate) fn to_f64(i: i64) -> f64 {
-    i as f64
-}
-
-impl Lattice {
-    /// Errors: non-finite value, `dx == 0`, `dy == 0`. The signs of the steps set the
-    /// index directions; see [`Lattice`].
-    pub fn new(x0: f64, y0: f64, dx: f64, dy: f64) -> Result<Self, GridError> {
-        for (name, v) in [("x0", x0), ("y0", y0), ("dx", dx), ("dy", dy)] {
-            if !v.is_finite() {
-                return Err(GridError::NonFinite(name));
-            }
-        }
-        if dx == 0.0 || dy == 0.0 {
-            return Err(GridError::Resolution { dx, dy });
-        }
-        Ok(Self { x0, y0, dx, dy, inv_dx: 1.0 / dx, inv_dy: 1.0 / dy, period: None })
+impl XAxis {
+    /// Errors: non-finite value, `dx <= 0`.
+    pub fn new(x0: f64, dx: f64) -> Result<Self, GridError> {
+        finite(&[("x0", x0), ("dx", dx)])?;
+        positive("dx", dx)?;
+        Ok(Self { x0, dx, period: None })
     }
     /// Makes x periodic with `period` (e.g. 360 for a longitude). Geometry x and cell x
     /// then compare modulo the period: a lattice that runs over 0..360 burns geometries
@@ -206,22 +160,168 @@ impl Lattice {
         self.x0
     }
     #[must_use]
-    pub fn y0(&self) -> f64 {
-        self.y0
-    }
-    /// The signed column step.
-    #[must_use]
     pub fn dx(&self) -> f64 {
         self.dx
     }
-    /// The signed row step.
+    #[must_use]
+    pub fn period(&self) -> Option<f64> {
+        self.period
+    }
+}
+
+/// The y axis of a [`Lattice`]: the edge of row 0, a positive step, and the row direction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct YAxis {
+    y0: f64,
+    dy: f64,
+    origin: YOrigin,
+}
+
+impl YAxis {
+    /// Errors: non-finite value, `dy <= 0`.
+    pub fn new(y0: f64, dy: f64, origin: YOrigin) -> Result<Self, GridError> {
+        finite(&[("y0", y0), ("dy", dy)])?;
+        positive("dy", dy)?;
+        Ok(Self { y0, dy, origin })
+    }
+    #[must_use]
+    pub fn y0(&self) -> f64 {
+        self.y0
+    }
     #[must_use]
     pub fn dy(&self) -> f64 {
         self.dy
     }
     #[must_use]
-    pub fn period(&self) -> Option<f64> {
-        self.period
+    pub fn origin(&self) -> YOrigin {
+        self.origin
+    }
+}
+
+fn finite(vals: &[(&'static str, f64)]) -> Result<(), GridError> {
+    match vals.iter().find(|(_, v)| !v.is_finite()) {
+        Some(&(name, _)) => Err(GridError::NonFinite(name)),
+        None => Ok(()),
+    }
+}
+
+#[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
+fn positive(axis: &'static str, step: f64) -> Result<(), GridError> {
+    if !(step > 0.0) {
+        return Err(GridError::Resolution { axis, step });
+    }
+    Ok(())
+}
+
+/// Infinite regular lattice. Column edge k is `x0 + k*dx`. Row edge k is `y0 - k*dy` for
+/// [`YOrigin::NorthUp`] and `y0 + k*dy` for [`YOrigin::SouthUp`]. Both steps are > 0.
+///
+/// Cell (r, c) is the box between `x_edge(c)`, `x_edge(c+1)`, `y_edge(r)` and
+/// `y_edge(r+1)`. Every output record is in these indices.
+///
+/// A GDAL geotransform `[x0, dx, 0, y0, 0, dy]` maps to `XAxis::new(x0, dx)` and
+/// `YAxis::new(y0, |dy|, origin)`, with `NorthUp` for `dy < 0` and `SouthUp` for
+/// `dy > 0`; see [`Lattice::from_geotransform`].
+///
+/// A burn on a `SouthUp` lattice gives the records of the `NorthUp` lattice over the same
+/// cells, with the rows flipped. The edge rules are geographic on both (a point on a shared
+/// edge goes into the cell to its east and to its south).
+///
+/// [`XAxis::with_period`] makes x periodic (a longitude). Upstream controlledburn keeps
+/// row order and the antimeridian in a front end; burnscars does both in the engine, so a
+/// cell that the seam cuts gets exact coverage.
+///
+/// # Example
+///
+/// A brick of 3 rows by 4 columns: latitude centres 10, 20, 30 (ascending, so row 0 is
+/// south), longitude centres 170, 180, 190, 200 (a 0..360 grid). The zone is in
+/// [-180, 180).
+///
+/// ```
+/// use burnscars::{Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span, XAxis, YAxis, YOrigin};
+/// use geo_types::Rect;
+///
+/// let x = XAxis::new(165.0, 10.0)?.with_period(360.0)?;
+/// let y = YAxis::new(5.0, 10.0, YOrigin::SouthUp)?; // y0 = 5 is the south edge
+/// let grid = Grid::new(Lattice::new(x, y), Span::new(Row(0), Row(3))?, Span::new(Col(0), Col(4))?)?;
+/// let zone = Rect::new((-175.0, 15.0), (-165.0, 35.0));
+/// let out = Burner::new(Mode::Approx).burn(&grid, [(GeomId(0), zone)])?;
+/// let runs: Vec<(u32, std::ops::Range<u32>)> =
+///     out.runs.iter().map(|r| (r.row.0, r.cols.range())).collect();
+/// // The cells at longitude 190, latitude 30 and 20.
+/// assert_eq!(runs, [(2, 2..3), (1, 2..3)]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lattice {
+    x0: f64,
+    y0: f64,
+    dx: f64,
+    dy: f64,
+    /// 1 / dx and 1 / dy: the first guess of `col_of` / `row_of`, which the edge loops
+    /// then correct, so a rounding difference from a division cannot change the result.
+    inv_dx: f64,
+    inv_dy: f64,
+    period: Option<f64>,
+    origin: YOrigin,
+    /// Row edge k is `y0 + (y_base - k) * dy` (`NorthUp`) or `y0 + (y_base + k) * dy`
+    /// (`SouthUp`). 0 on a caller's lattice. On the north-up form of a `SouthUp` grid it is
+    /// the flip sum, so the burn uses the caller's edges bit for bit.
+    y_base: i64,
+}
+
+#[expect(clippy::cast_precision_loss, reason = "lattice indices stay below 2^53")]
+pub(crate) fn to_f64(i: i64) -> f64 {
+    i as f64
+}
+
+impl Lattice {
+    #[must_use]
+    pub fn new(x: XAxis, y: YAxis) -> Self {
+        Self {
+            x0: x.x0,
+            y0: y.y0,
+            dx: x.dx,
+            dy: y.dy,
+            inv_dx: 1.0 / x.dx,
+            inv_dy: 1.0 / y.dy,
+            period: x.period,
+            origin: y.origin,
+            y_base: 0,
+        }
+    }
+    /// From a GDAL geotransform `[x0, dx, rx, y0, ry, dy]`: `x = x0 + col*dx + row*rx`,
+    /// `y = y0 + col*ry + row*dy`. `dy < 0` is [`YOrigin::NorthUp`], `dy > 0` is
+    /// [`YOrigin::SouthUp`].
+    ///
+    /// Errors: non-finite value, `rx != 0` or `ry != 0`, `dx <= 0` (columns run east),
+    /// `dy == 0`.
+    pub fn from_geotransform(gt: [f64; 6]) -> Result<Self, GridError> {
+        let [x0, dx, rx, y0, ry, dy] = gt;
+        finite(&[("x0", x0), ("dx", dx), ("rx", rx), ("y0", y0), ("ry", ry), ("dy", dy)])?;
+        if rx != 0.0 || ry != 0.0 {
+            return Err(GridError::Rotated { rx, ry });
+        }
+        let origin = if dy < 0.0 { YOrigin::NorthUp } else { YOrigin::SouthUp };
+        Ok(Self::new(XAxis::new(x0, dx)?, YAxis::new(y0, dy.abs(), origin)?))
+    }
+    /// The GDAL geotransform `[x0, dx, 0, y0, 0, dy]`. It does not hold the period.
+    #[must_use]
+    pub fn to_geotransform(&self) -> [f64; 6] {
+        let y = self.y();
+        let dy = match y.origin {
+            YOrigin::NorthUp => -y.dy,
+            YOrigin::SouthUp => y.dy,
+        };
+        [self.x0, self.dx, 0.0, y.y0, 0.0, dy]
+    }
+    #[must_use]
+    pub fn x(&self) -> XAxis {
+        XAxis { x0: self.x0, dx: self.dx, period: self.period }
+    }
+    #[must_use]
+    pub fn y(&self) -> YAxis {
+        YAxis { y0: self.y0, dy: self.dy, origin: self.origin }
     }
     #[must_use]
     pub fn x_edge(&self, col: i64) -> f64 {
@@ -229,19 +329,40 @@ impl Lattice {
     }
     #[must_use]
     pub fn y_edge(&self, row: i64) -> f64 {
-        self.y0 - to_f64(row) * self.dy
+        // NorthUp with y_base 0: y0 + (-k)*dy, which is y0 - k*dy bit for bit.
+        self.y0 + to_f64(self.y_base + self.y_sign() * row) * self.dy
+    }
+    /// -1 for `NorthUp`, 1 for `SouthUp`.
+    fn y_sign(&self) -> i64 {
+        match self.origin {
+            YOrigin::NorthUp => -1,
+            YOrigin::SouthUp => 1,
+        }
+    }
+    pub(crate) fn x0(&self) -> f64 {
+        self.x0
+    }
+    pub(crate) fn dx(&self) -> f64 {
+        self.dx
+    }
+    pub(crate) fn dy(&self) -> f64 {
+        self.dy
+    }
+    /// Fractional row index of `y` (north-up only): `y_edge(y_index(y)) == y` up to rounding.
+    /// controlledburn `(ymax - y) / dy`.
+    pub(crate) fn y_index(&self, y: f64) -> f64 {
+        debug_assert!(self.origin == YOrigin::NorthUp, "y_index on a south-up lattice");
+        to_f64(self.y_base) + (self.y0 - y) / self.dy
     }
     /// Column centre, controlledburn formula `xmin + (col + 0.5) * dx`.
     pub(crate) fn x_mid(&self, col: i64) -> f64 {
         self.x0 + (to_f64(col) + 0.5) * self.dx
     }
-    /// Row centre, controlledburn formula `ymax - (r + 0.5) * dy`.
+    /// Row centre (north-up only), controlledburn formula `ymax - (r + 0.5) * dy`.
     pub(crate) fn y_mid(&self, row: i64) -> f64 {
-        self.y0 - (to_f64(row) + 0.5) * self.dy
-    }
-    /// The layout that the ported algorithms take: north-up, x ascending, no period.
-    pub(crate) fn is_north_up(&self) -> bool {
-        self.dx > 0.0 && self.dy > 0.0 && self.period.is_none()
+        debug_assert!(self.origin == YOrigin::NorthUp, "y_mid on a south-up lattice");
+        // With y_base 0: y0 + (-r - 0.5)*dy, which is y0 - (r + 0.5)*dy bit for bit.
+        self.y0 + (to_f64(self.y_base - row) - 0.5) * self.dy
     }
 }
 
@@ -293,11 +414,9 @@ impl Grid {
         let rows = Span::new(Row(0), Row(nrow))?;
         let cols = Span::new(Col(0), Col(ncol))?;
         let lattice = Lattice::new(
-            xmin,
-            ymax,
-            (xmax - xmin) / f64::from(ncol),
-            (ymax - ymin) / f64::from(nrow),
-        )?;
+            XAxis::new(xmin, (xmax - xmin) / f64::from(ncol))?,
+            YAxis::new(ymax, (ymax - ymin) / f64::from(nrow), YOrigin::NorthUp)?,
+        );
         Self::new(lattice, rows, cols)
     }
     /// A sub-window with the same lattice and the same full grid.
@@ -336,11 +455,15 @@ impl Grid {
     #[must_use]
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn col_of(&self, x: f64) -> Pos<Col> {
-        if !self.lattice.is_north_up() {
-            return self.col_of_mapped(x);
-        }
         let l = &self.lattice;
         let (s, e) = (i64::from(self.full_cols.start.0), i64::from(self.full_cols.end.0));
+        let x = match l.period {
+            Some(p) => {
+                let west = l.x_edge(s);
+                west + (x - west).rem_euclid(p)
+            }
+            None => x,
+        };
         if !(x >= l.x_edge(s)) {
             return Pos::Before; // also NaN
         }
@@ -367,8 +490,9 @@ impl Grid {
     #[must_use]
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn row_of(&self, y: f64) -> Pos<Row> {
-        if !self.lattice.is_north_up() {
-            return self.row_of_mapped(y);
+        if self.lattice.origin == YOrigin::SouthUp {
+            let n = self.north_up();
+            return n.rows.pos(n.grid.row_of(y));
         }
         let l = &self.lattice;
         let (s, e) = (i64::from(self.full_rows.start.0), i64::from(self.full_rows.end.0));
@@ -382,7 +506,7 @@ impl Grid {
         if y == bottom {
             return Pos::In(Row(to_u32(e - 1))); // closed far edge of the full grid
         }
-        let mut r = floor_clamped((l.y0 - y) * l.inv_dy, s, e - 1);
+        let mut r = floor_clamped(to_f64(l.y_base) + (l.y0 - y) * l.inv_dy, s, e - 1);
         while r > s && y > l.y_edge(r) {
             r -= 1;
         }
@@ -394,66 +518,58 @@ impl Grid {
 }
 
 impl Grid {
-    /// This grid as the north-up, ascending, unwrapped grid over the same cells.
+    /// This grid in the layout of the ported algorithms (north-up, no period), and the
+    /// row map back to the caller's indices.
     pub(crate) fn north_up(&self) -> NorthUp {
-        let l = &self.lattice;
-        let rows = Flip::new(l.dy < 0.0, self.full_rows);
-        let cols = Flip::new(l.dx < 0.0, self.full_cols);
-        // The edge of the flipped index s + e - k is the edge of k.
-        let x0 = cols.sum.map_or(l.x0, |sum| l.x0 + to_f64(sum) * l.dx);
-        let y0 = rows.sum.map_or(l.y0, |sum| l.y0 - to_f64(sum) * l.dy);
-        let (dx, dy) = (l.dx.abs(), l.dy.abs());
-        let lattice = Lattice { x0, y0, dx, dy, inv_dx: 1.0 / dx, inv_dy: 1.0 / dy, period: None };
-        let grid = Grid {
-            lattice,
-            full_rows: self.full_rows,
-            full_cols: self.full_cols,
-            rows: rows.span(self.rows),
-            cols: cols.span(self.cols),
+        let l = self.lattice;
+        let rows = Flip::new(l.origin == YOrigin::SouthUp, self.full_rows);
+        let lattice = Lattice {
+            origin: YOrigin::NorthUp,
+            y_base: rows.sum.unwrap_or(l.y_base),
+            period: None,
+            ..l
         };
-        NorthUp { grid, period: l.period, rows, cols }
-    }
-
-    fn col_of_mapped(&self, x: f64) -> Pos<Col> {
-        let n = self.north_up();
-        let x = match n.period {
-            Some(p) => {
-                let west = n.grid.lattice.x_edge(i64::from(n.grid.full_cols.start.0));
-                west + (x - west).rem_euclid(p)
-            }
-            None => x,
-        };
-        n.cols.pos(n.grid.col_of(x))
-    }
-
-    fn row_of_mapped(&self, y: f64) -> Pos<Row> {
-        let n = self.north_up();
-        n.rows.pos(n.grid.row_of(y))
+        let grid = NorthUpGrid(Grid { lattice, rows: rows.span(self.rows), ..*self });
+        NorthUp { grid, period: l.period, rows }
     }
 }
 
-/// A grid as the layout of the ported algorithms, and the map back to the caller's indices.
+/// A grid in the only layout that the ported algorithms take: north-up, no period.
+/// [`Grid::north_up`] is the only constructor.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NorthUpGrid(Grid);
+
+impl std::ops::Deref for NorthUpGrid {
+    type Target = Grid;
+    fn deref(&self) -> &Grid {
+        &self.0
+    }
+}
+
+/// A grid as a [`NorthUpGrid`], and the map back to the caller's indices.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NorthUp {
-    /// North-up, x ascending, no period.
-    pub(crate) grid: Grid,
+    pub(crate) grid: NorthUpGrid,
     pub(crate) period: Option<f64>,
     pub(crate) rows: Flip,
-    pub(crate) cols: Flip,
 }
 
 impl NorthUp {
+    /// No flip and no period: the records need no map.
+    pub(crate) fn is_identity(&self) -> bool {
+        !self.rows.is_flip() && self.period.is_none()
+    }
     /// The north-up grid moved east by `k` periods.
-    pub(crate) fn shifted(&self, k: i64, period: f64) -> Grid {
+    pub(crate) fn shifted(&self, k: i64, period: f64) -> NorthUpGrid {
         let mut g = self.grid;
         if k != 0 {
-            g.lattice.x0 += to_f64(k) * period;
+            g.0.lattice.x0 += to_f64(k) * period;
         }
         g
     }
 }
 
-/// An index flip over a full span `[s, e)`: `k` maps to `s + e - 1 - k`. It is its own inverse.
+/// A row flip over a full span `[s, e)`: `k` maps to `s + e - 1 - k`. It is its own inverse.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Flip {
     /// `s + e`, or `None` for no flip.
@@ -461,8 +577,8 @@ pub(crate) struct Flip {
 }
 
 impl Flip {
-    fn new<T: Copy + Ord + Into<u32>>(flip: bool, full: Span<T>) -> Self {
-        Self { sum: flip.then(|| i64::from(full.start.into()) + i64::from(full.end.into())) }
+    fn new(flip: bool, full: Span<Row>) -> Self {
+        Self { sum: flip.then(|| i64::from(full.start.0) + i64::from(full.end.0)) }
     }
     pub(crate) fn is_flip(self) -> bool {
         self.sum.is_some()
@@ -470,32 +586,22 @@ impl Flip {
     pub(crate) fn index(self, k: u32) -> u32 {
         self.sum.map_or(k, |sum| to_u32(sum - 1 - i64::from(k)))
     }
-    /// Half-open `[a, b)` to the flipped half-open range.
-    pub(crate) fn range(self, a: u32, b: u32) -> (u32, u32) {
-        self.sum.map_or((a, b), |sum| (to_u32(sum - i64::from(b)), to_u32(sum - i64::from(a))))
+    fn span(self, s: Span<Row>) -> Span<Row> {
+        match self.sum {
+            None => s,
+            Some(sum) => Span::from_parts(
+                Row(to_u32(sum - i64::from(s.end.0))),
+                Row(to_u32(sum - i64::from(s.start.0))),
+            ),
+        }
     }
-    fn span<T: Copy + Ord + From<u32> + Into<u32>>(self, s: Span<T>) -> Span<T> {
-        let (a, b) = self.range(s.start.into(), s.end.into());
-        Span::from_parts(T::from(a), T::from(b))
-    }
-    fn pos<T: Copy + From<u32> + Into<u32>>(self, p: Pos<T>) -> Pos<T> {
+    fn pos(self, p: Pos<Row>) -> Pos<Row> {
         match (self.is_flip(), p) {
-            (_, Pos::In(t)) => Pos::In(T::from(self.index(t.into()))),
+            (_, Pos::In(r)) => Pos::In(Row(self.index(r.0))),
             (false, p) => p,
             (true, Pos::Before) => Pos::After,
             (true, Pos::After) => Pos::Before,
         }
-    }
-}
-
-impl From<u32> for Row {
-    fn from(v: u32) -> Self {
-        Self(v)
-    }
-}
-impl From<u32> for Col {
-    fn from(v: u32) -> Self {
-        Self(v)
     }
 }
 
@@ -517,15 +623,79 @@ mod tests {
         Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10).expect("grid")
     }
 
+    fn north_up(x0: f64, y0: f64, dx: f64, dy: f64) -> Lattice {
+        let x = XAxis::new(x0, dx).expect("x");
+        Lattice::new(x, YAxis::new(y0, dy, YOrigin::NorthUp).expect("y"))
+    }
+
+    #[test]
+    fn geotransform_round_trips_and_rejects_rotation() {
+        for gt in [[10.0, 0.5, 0.0, 60.0, 0.0, -0.25], [-180.0, 1.0, 0.0, -90.0, 0.0, 2.0]] {
+            let l = Lattice::from_geotransform(gt).expect("gt");
+            assert_eq!(l.to_geotransform(), gt);
+            assert_eq!((l.x_edge(3), l.y_edge(3)), (gt[0] + 3.0 * gt[1], gt[3] + 3.0 * gt[5]));
+        }
+        let south = Lattice::from_geotransform([0.0, 1.0, 0.0, 5.0, 0.0, 10.0]).expect("gt");
+        assert_eq!(south.y().origin(), YOrigin::SouthUp);
+        let bad = |gt| Lattice::from_geotransform(gt).expect_err("bad");
+        assert!(matches!(bad([0.0, 1.0, 0.1, 0.0, 0.0, -1.0]), GridError::Rotated { .. }));
+        assert!(matches!(bad([0.0, 1.0, 0.0, 0.0, 0.1, -1.0]), GridError::Rotated { .. }));
+        assert!(matches!(
+            bad([0.0, -1.0, 0.0, 0.0, 0.0, -1.0]),
+            GridError::Resolution { axis: "dx", .. }
+        ));
+        assert!(matches!(
+            bad([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
+            GridError::Resolution { axis: "dy", .. }
+        ));
+    }
+
+    /// The north-up form of a south-up grid has the caller's row edges and centres, bit for bit.
+    #[test]
+    fn south_up_burns_on_the_callers_edges() {
+        let x = XAxis::new(0.0, 0.1).expect("x");
+        let l = Lattice::new(x, YAxis::new(-0.3, 0.1, YOrigin::SouthUp).expect("y"));
+        let g = Grid::new(
+            l,
+            Span::new(Row(0), Row(700)).expect("r"),
+            Span::new(Col(0), Col(3)).expect("c"),
+        )
+        .and_then(|g| {
+            g.window(Span::new(Row(40), Row(90)).expect("r"), Span::new(Col(0), Col(3)).expect("c"))
+        })
+        .expect("grid");
+        let n = g.north_up();
+        assert_eq!(n.grid.rows().range(), 610..660);
+        let nl = *n.grid.lattice();
+        for j in 0..700_i64 {
+            let k = 699 - j; // north-up row of caller row j
+            assert_eq!(nl.y_edge(k + 1), l.y_edge(j), "south edge of row {j}");
+            assert_eq!(nl.y_edge(k), l.y_edge(j + 1), "north edge of row {j}");
+            assert_eq!(nl.y_mid(k), -0.3 + (to_f64(j) + 0.5) * 0.1, "centre of row {j}");
+            let r = Row(u32::try_from(j).expect("j"));
+            let south = Row(r.0.saturating_sub(1)); // a shared edge goes south
+            assert_eq!(g.row_of(l.y_edge(j)), Pos::In(south), "south edge {j}");
+            assert_eq!(g.row_of(l.y_edge(j).next_up()), Pos::In(r), "above south edge {j}");
+        }
+    }
+
     #[test]
     fn lattice_rejects_bad_values() {
-        assert!(matches!(Lattice::new(f64::NAN, 0.0, 1.0, 1.0), Err(GridError::NonFinite("x0"))));
-        assert!(matches!(Lattice::new(0.0, 0.0, 0.0, 1.0), Err(GridError::Resolution { .. })));
-        assert!(matches!(Lattice::new(0.0, 0.0, 1.0, 0.0), Err(GridError::Resolution { .. })));
-        assert!(Lattice::new(0.0, 0.0, -1.0, -1.0).is_ok());
+        assert!(matches!(XAxis::new(f64::NAN, 1.0), Err(GridError::NonFinite("x0"))));
+        assert!(matches!(
+            YAxis::new(0.0, f64::INFINITY, YOrigin::NorthUp),
+            Err(GridError::NonFinite("dy"))
+        ));
+        for step in [0.0, -1.0] {
+            assert!(matches!(XAxis::new(0.0, step), Err(GridError::Resolution { axis: "dx", .. })));
+            assert!(matches!(
+                YAxis::new(0.0, step, YOrigin::SouthUp),
+                Err(GridError::Resolution { axis: "dy", .. })
+            ));
+        }
         for p in [0.0, -360.0, f64::NAN, f64::INFINITY] {
             assert!(matches!(
-                Lattice::new(0.0, 0.0, 1.0, 1.0).and_then(|l| l.with_period(p)),
+                XAxis::new(0.0, 1.0).and_then(|x| x.with_period(p)),
                 Err(GridError::Period(_))
             ));
         }
@@ -551,7 +721,7 @@ mod tests {
     #[test]
     fn col_of_maps_each_edge_to_its_column() {
         let g = Grid::new(
-            Lattice::new(0.0, 0.0, 0.1, 0.1).expect("lattice"),
+            north_up(0.0, 0.0, 0.1, 0.1),
             Span::new(Row(0), Row(1000)).expect("rows"),
             Span::new(Col(0), Col(1000)).expect("cols"),
         )

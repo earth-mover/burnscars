@@ -3,7 +3,9 @@
 
 mod common;
 
-use burnscars::{BurnResult, Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span};
+use burnscars::{
+    BurnResult, Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span, XAxis, YAxis, YOrigin,
+};
 use common::{expanded, ls};
 use geo_types::{Geometry, LineString, MultiPoint, Point, Polygon};
 use proptest::prelude::*;
@@ -109,6 +111,13 @@ fn polyline(l: Lat) -> impl Strategy<Value = Option<LineString<f64>>> {
     })
 }
 
+/// A north-up lattice with y0 = 32.
+#[expect(clippy::expect_used, reason = "test helper")]
+fn north_up(x0: f64, dx: f64, dy: f64) -> Lattice {
+    let x = XAxis::new(x0, dx).expect("x");
+    Lattice::new(x, YAxis::new(32.0, dy, YOrigin::NorthUp).expect("y"))
+}
+
 fn chunks(n: u32, size: u32) -> Vec<(u32, u32)> {
     (0..n).step_by(size as usize).map(|s| (s, (s + size).min(n))).collect()
 }
@@ -124,9 +133,19 @@ type Case = (f64, f64, f64, u32, u32, Vec<Polygon<f64>>, Vec<LineString<f64>>, V
 
 /// Lattice origin x0 and step first, so the geometry can snap to it and the grid (at most
 /// ceil(32 / step) cells per axis, full size in 3 of 4 draws) usually covers the geometry.
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "small positive")]
 fn case() -> impl Strategy<Value = Case> {
-    (0.0..1.5_f64, 0.3..2.0_f64, 0.3..2.0_f64).prop_flat_map(|(x0, dx, dy)| {
+    case_with(0.3..2.0_f64)
+}
+
+/// `dy` a multiple of 1/64: the row edges of both row orders are exact, so they agree
+/// bit for bit.
+fn case_dyadic() -> impl Strategy<Value = Case> {
+    case_with((20_u32..128).prop_map(|m| f64::from(m) / 64.0))
+}
+
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "small positive")]
+fn case_with(dy: impl Strategy<Value = f64>) -> impl Strategy<Value = Case> {
+    (0.0..1.5_f64, 0.3..2.0_f64, dy).prop_flat_map(|(x0, dx, dy)| {
         let l = Lat { x0, dx, dy };
         let (nc, nr) = ((32.0 / dx).ceil() as u32, (32.0 / dy).ceil() as u32);
         (
@@ -151,7 +170,7 @@ proptest! {
         (x0, dx, dy, ncol, nrow, polys, lines, pts) in case(),
         rchunk in 1_u32..12, cchunk in 1_u32..12, split in 0_usize..8,
     ) {
-        let lat = Lattice::new(x0, 32.0, dx, dy).expect("lattice");
+        let lat = north_up(x0, dx, dy);
         let g = Grid::new(lat, Span::new(Row(0), Row(nrow)).expect("r"), Span::new(Col(0), Col(ncol)).expect("c")).expect("grid");
         let mut geoms: Vec<Geometry<f64>> = polys.into_iter().map(Geometry::Polygon).collect();
         geoms.extend(lines.into_iter().map(Geometry::LineString));
@@ -184,56 +203,40 @@ proptest! {
         }
     }
 
-    /// A lattice with a negative dy, dx or both gives the records of the positive-step
-    /// lattice over the same cells, bit for bit, with the indices flipped.
+    /// A `SouthUp` lattice gives the records of the `NorthUp` lattice over the same cells,
+    /// bit for bit, with the rows flipped.
     #[test]
-    fn negative_steps_flip_the_indices(
-        (x0, dx, dy, ncol, nrow, polys, lines, pts) in case(),
-        rows in (0_u32..12, 0_u32..12), cols in (0_u32..12, 0_u32..12), flips in 1_u8..4,
+    fn south_up_flips_the_rows(
+        (x0, dx, dy, ncol, nrow, polys, lines, pts) in case_dyadic(),
+        rows in (0_u32..12, 0_u32..12), cols in (0_u32..12, 0_u32..12),
     ) {
-        let (fx, fy) = (flips & 1 != 0, flips & 2 != 0);
-        let (nc, nr) = (f64::from(ncol), f64::from(nrow));
-        // The flipped lattice starts at the far edge. The positive lattice takes the
-        // north-up origin that the burner derives from it, so both have the same cells.
-        let (east, south) = (x0 + nc * dx, 32.0 - nr * dy);
-        let pos_x0 = if fx { east + nc * -dx } else { x0 };
-        let pos_y0 = if fy { south - nr * -dy } else { 32.0 };
-        let pos = Lattice::new(pos_x0, pos_y0, dx, dy).expect("lattice");
-        let neg = Lattice::new(
-            if fx { east } else { x0 },
-            if fy { south } else { 32.0 },
-            if fx { -dx } else { dx },
-            if fy { -dy } else { dy },
-        ).expect("lattice");
+        let x = XAxis::new(x0, dx).expect("x");
+        let south_edge = 32.0 - f64::from(nrow) * dy; // exact: dy is dyadic
+        let south = Lattice::new(x, YAxis::new(south_edge, dy, YOrigin::SouthUp).expect("y"));
         let span = |n: u32, (a, b): (u32, u32)| {
             let (a, b) = (a.min(n - 1), b.min(n - 1));
             (a.min(b), a.max(b) + 1)
         };
         let (r0, r1) = span(nrow, rows);
         let (c0, c1) = span(ncol, cols);
-        let flip = |on: bool, n: u32, (a, b): (u32, u32)| if on { (n - b, n - a) } else { (a, b) };
-        let grid = |l: Lattice, (r0, r1): (u32, u32), (c0, c1): (u32, u32)| {
+        let grid = |l: Lattice, (r0, r1): (u32, u32)| {
             Grid::new(l, Span::new(Row(0), Row(nrow)).expect("r"), Span::new(Col(0), Col(ncol)).expect("c"))
                 .and_then(|g| g.window(Span::new(Row(r0), Row(r1)).expect("r"), Span::new(Col(c0), Col(c1)).expect("c")))
                 .expect("grid")
         };
-        let gp = grid(pos, (r0, r1), (c0, c1));
-        let gn = grid(neg, flip(fy, nrow, (r0, r1)), flip(fx, ncol, (c0, c1)));
+        let gn = grid(north_up(x0, dx, dy), (r0, r1));
+        let gs = grid(south, (nrow - r1, nrow - r0));
         let mut geoms: Vec<Geometry<f64>> = polys.into_iter().map(Geometry::Polygon).collect();
         geoms.extend(lines.into_iter().map(Geometry::LineString));
         geoms.push(Geometry::MultiPoint(MultiPoint::new(pts.iter().map(|&(x, y)| Point::new(x, y)).collect())));
 
         for mode in [Mode::Coverage, Mode::Approx] {
-            let want = expanded(&burn_all(mode, &gp, &geoms));
-            let got: std::collections::BTreeMap<_, _> = expanded(&burn_all(mode, &gn, &geoms))
+            let want = expanded(&burn_all(mode, &gn, &geoms));
+            let got: std::collections::BTreeMap<_, _> = expanded(&burn_all(mode, &gs, &geoms))
                 .into_iter()
-                .map(|((t, id, r, c), v)| {
-                    let r = if fy { nrow - 1 - r } else { r };
-                    let c = if fx { ncol - 1 - c } else { c };
-                    ((t, id, r, c), v)
-                })
+                .map(|((t, id, r, c), v)| ((t, id, nrow - 1 - r, c), v))
                 .collect();
-            prop_assert_eq!(&got, &want, "mode {:?}, flip x {}, flip y {}", mode, fx, fy);
+            prop_assert_eq!(&got, &want, "mode {:?}", mode);
         }
     }
 }
