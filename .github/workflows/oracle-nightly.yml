@@ -12,15 +12,15 @@ jobs:
   oracle:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - id: toolchain
         run: sed -n 's/^channel = "\(.*\)"$/channel=\1/p' rust-toolchain.toml >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10)
+      - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@v2.87.29
         with:
           tool: just@1.59.0,cargo-nextest@0.9.148,uv@0.13.1
       # Regenerate into a temporary directory and compare with tolerances, not bytes:
