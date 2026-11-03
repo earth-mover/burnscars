@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e5cc1953b4db06cade81ab56a345da9a251a0419b8169d4236ad8e6c13729acf # shrinks to (x0, dx, dy, ncol, nrow, polys, lines, pts) = (0.0, 0.3, 0.3, 107, 107, [POLYGON((7.147575033767143 27.133654608891074,1.3112768353583228 31.79065973753784,2.155988455007848 23.939732923221086,7.147575033767143 27.133654608891074))], [], []), rows = (0, 0), cols = (0, 4), flips = 2

@@ -183,4 +183,57 @@ proptest! {
             prop_assert_eq!(&tiled, &full);
         }
     }
+
+    /// A lattice with a negative dy, dx or both gives the records of the positive-step
+    /// lattice over the same cells, bit for bit, with the indices flipped.
+    #[test]
+    fn negative_steps_flip_the_indices(
+        (x0, dx, dy, ncol, nrow, polys, lines, pts) in case(),
+        rows in (0_u32..12, 0_u32..12), cols in (0_u32..12, 0_u32..12), flips in 1_u8..4,
+    ) {
+        let (fx, fy) = (flips & 1 != 0, flips & 2 != 0);
+        let (nc, nr) = (f64::from(ncol), f64::from(nrow));
+        // The flipped lattice starts at the far edge. The positive lattice takes the
+        // north-up origin that the burner derives from it, so both have the same cells.
+        let (east, south) = (x0 + nc * dx, 32.0 - nr * dy);
+        let pos_x0 = if fx { east + nc * -dx } else { x0 };
+        let pos_y0 = if fy { south - nr * -dy } else { 32.0 };
+        let pos = Lattice::new(pos_x0, pos_y0, dx, dy).expect("lattice");
+        let neg = Lattice::new(
+            if fx { east } else { x0 },
+            if fy { south } else { 32.0 },
+            if fx { -dx } else { dx },
+            if fy { -dy } else { dy },
+        ).expect("lattice");
+        let span = |n: u32, (a, b): (u32, u32)| {
+            let (a, b) = (a.min(n - 1), b.min(n - 1));
+            (a.min(b), a.max(b) + 1)
+        };
+        let (r0, r1) = span(nrow, rows);
+        let (c0, c1) = span(ncol, cols);
+        let flip = |on: bool, n: u32, (a, b): (u32, u32)| if on { (n - b, n - a) } else { (a, b) };
+        let grid = |l: Lattice, (r0, r1): (u32, u32), (c0, c1): (u32, u32)| {
+            Grid::new(l, Span::new(Row(0), Row(nrow)).expect("r"), Span::new(Col(0), Col(ncol)).expect("c"))
+                .and_then(|g| g.window(Span::new(Row(r0), Row(r1)).expect("r"), Span::new(Col(c0), Col(c1)).expect("c")))
+                .expect("grid")
+        };
+        let gp = grid(pos, (r0, r1), (c0, c1));
+        let gn = grid(neg, flip(fy, nrow, (r0, r1)), flip(fx, ncol, (c0, c1)));
+        let mut geoms: Vec<Geometry<f64>> = polys.into_iter().map(Geometry::Polygon).collect();
+        geoms.extend(lines.into_iter().map(Geometry::LineString));
+        geoms.push(Geometry::MultiPoint(MultiPoint::new(pts.iter().map(|&(x, y)| Point::new(x, y)).collect())));
+
+        for mode in [Mode::Coverage, Mode::Approx] {
+            let want = expanded(&burn_all(mode, &gp, &geoms));
+            let got: std::collections::BTreeMap<_, _> = expanded(&burn_all(mode, &gn, &geoms))
+                .into_iter()
+                .map(|((t, id, r, c), v)| {
+                    let r = if fy { nrow - 1 - r } else { r };
+                    let c = if fx { ncol - 1 - c } else { c };
+                    ((t, id, r, c), v)
+                })
+                .collect();
+            prop_assert_eq!(&got, &want, "mode {:?}, flip x {}, flip y {}", mode, fx, fy);
+        }
+    }
 }
