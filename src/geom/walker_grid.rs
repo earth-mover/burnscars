@@ -8,7 +8,7 @@
 //! `cpp/src/scanline.cpp`, without its range test.
 
 use crate::geom::{box_::CellBox, coord::Coord, side::Side};
-use crate::grid::{Col, Grid, Pos, Row, Span};
+use crate::grid::{Col, Grid, NorthUpGrid, Pos, Row, Span};
 use crate::input::Envelope;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,7 +27,7 @@ impl WalkerGrid {
     /// exactextract `processing_region` ([src/raster_cell_intersection.cpp#L56](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp#L56)) +
     /// `get_geometry_grid` ([src/raster_cell_intersection.cpp#L81](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp#L81))
     /// on the lattice, with a one-cell margin in place of `Grid::shrink_to_fit` fixes.
-    pub(crate) fn for_envelope(grid: &Grid, env: &Envelope) -> Option<Self> {
+    pub(crate) fn for_envelope(grid: &NorthUpGrid, env: &Envelope) -> Option<Self> {
         let (wr, wc) = (grid.rows(), grid.cols());
         let (c0, c1) = (i64::from(wc.start().0), i64::from(wc.end().0));
         let (r0, r1) = (i64::from(wr.start().0), i64::from(wr.end().0));
@@ -51,7 +51,7 @@ impl WalkerGrid {
         }
         let u = |v: i64| u32::try_from(v).ok();
         Some(Self {
-            grid: *grid,
+            grid: **grid,
             rows: Span::from_parts(Row(u(r_lo)?), Row(u(r_hi + 1)?)),
             cols: Span::from_parts(Col(u(c_lo)?), Col(u(c_hi + 1)?)),
         })
@@ -137,7 +137,7 @@ impl WalkerGrid {
     pub(crate) fn snap(&self, c: Coord) -> Coord {
         let l = self.grid.lattice();
         let x = snap_axis(c.x, ((c.x - l.x0()) / l.dx()).round(), l.dx(), |k| l.x_edge(k));
-        let y = snap_axis(c.y, ((l.y0() - c.y) / l.dy()).round(), l.dy(), |k| l.y_edge(k));
+        let y = snap_axis(c.y, l.y_index(c.y).round(), l.dy(), |k| l.y_edge(k));
         Coord::new(x, y)
     }
 
@@ -179,36 +179,39 @@ mod tests {
     fn g10() -> Grid {
         Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10).expect("grid")
     }
+    fn region(g: &Grid, e: Envelope) -> Option<WalkerGrid> {
+        WalkerGrid::for_envelope(&g.north_up().grid, &e)
+    }
     fn env(xmin: f64, ymin: f64, xmax: f64, ymax: f64) -> Envelope {
         Envelope { xmin, ymin, xmax, ymax }
     }
 
     #[test]
     fn region_has_a_one_cell_margin_clamped_to_the_window() {
-        let wg = WalkerGrid::for_envelope(&g10(), &env(2.5, 4.5, 6.5, 8.5)).expect("region");
+        let wg = region(&g10(), env(2.5, 4.5, 6.5, 8.5)).expect("region");
         // cols 2..=6 plus margin -> 1..=7; rows 1..=5 plus margin -> 0..=6
         assert_eq!((wg.cols.range(), wg.rows.range()), (1..8, 0..7));
-        let wg = WalkerGrid::for_envelope(&g10(), &env(-100.0, -100.0, 100.0, 100.0)).expect("all");
+        let wg = region(&g10(), env(-100.0, -100.0, 100.0, 100.0)).expect("all");
         assert_eq!((wg.cols.range(), wg.rows.range()), (0..10, 0..10));
     }
 
     #[test]
     fn degenerate_envelope_is_not_empty_and_outside_is_clamped_or_none() {
-        assert!(WalkerGrid::for_envelope(&g10(), &env(1.0, 5.0, 9.0, 5.0)).is_some());
+        assert!(region(&g10(), env(1.0, 5.0, 9.0, 5.0)).is_some());
         // Outside envelopes keep one edge cell: the empty test runs after margin and clamp.
-        let wg = WalkerGrid::for_envelope(&g10(), &env(11.0, 1.0, 12.0, 2.0)).expect("right");
+        let wg = region(&g10(), env(11.0, 1.0, 12.0, 2.0)).expect("right");
         assert_eq!(wg.cols.range(), 9..10);
-        let wg = WalkerGrid::for_envelope(&g10(), &env(1.0, -5.0, 2.0, -1.0)).expect("below");
+        let wg = region(&g10(), env(1.0, -5.0, 2.0, -1.0)).expect("below");
         assert_eq!(wg.rows.range(), 9..10);
         let w = g10()
             .window(Span::new(Row(0), Row(10)).expect("r"), Span::new(Col(5), Col(10)).expect("c"))
             .expect("window");
-        assert!(WalkerGrid::for_envelope(&w, &env(0.5, 1.0, 1.5, 2.0)).is_none());
+        assert!(region(&w, env(0.5, 1.0, 1.5, 2.0)).is_none());
     }
 
     #[test]
     fn local_indices_and_padding() {
-        let wg = WalkerGrid::for_envelope(&g10(), &env(2.5, 4.5, 6.5, 8.5)).expect("region");
+        let wg = region(&g10(), env(2.5, 4.5, 6.5, 8.5)).expect("region");
         assert_eq!(wg.local_col_of(-5.0), LocalCol(0));
         assert_eq!(wg.local_col_of(0.5), LocalCol(0)); // left of the region
         assert_eq!(wg.local_col_of(1.5), LocalCol(1));
@@ -222,7 +225,7 @@ mod tests {
 
     #[test]
     fn cell_boxes_come_from_the_lattice() {
-        let wg = WalkerGrid::for_envelope(&g10(), &env(2.5, 4.5, 6.5, 8.5)).expect("region");
+        let wg = region(&g10(), env(2.5, 4.5, 6.5, 8.5)).expect("region");
         let b = wg.cell_box(LocalRow(1), LocalCol(1));
         assert_eq!((b.xmin, b.xmax, b.ymin, b.ymax), (1.0, 2.0, 9.0, 10.0));
         let p = wg.cell_box(LocalRow(1), LocalCol(0));
@@ -235,7 +238,7 @@ mod tests {
 
     #[test]
     fn step_moves_and_stops_at_the_padding_ring() {
-        let wg = WalkerGrid::for_envelope(&g10(), &env(2.5, 4.5, 6.5, 8.5)).expect("region");
+        let wg = region(&g10(), env(2.5, 4.5, 6.5, 8.5)).expect("region");
         assert_eq!(wg.step(LocalRow(2), LocalCol(2), Side::Top), Some((LocalRow(1), LocalCol(2))));
         assert_eq!(
             wg.step(LocalRow(2), LocalCol(2), Side::Right),
@@ -248,7 +251,7 @@ mod tests {
     #[test]
     fn snap_moves_near_edge_vertices_onto_the_lattice() {
         let g = Grid::from_extent(0.0, 0.0, 10.0, 10.0, 100, 100).expect("grid");
-        let wg = WalkerGrid::for_envelope(&g, &env(0.0, 0.0, 5.0, 5.0)).expect("region");
+        let wg = region(&g, env(0.0, 0.0, 5.0, 5.0)).expect("region");
         let edge = g.lattice().x_edge(3); // 3 * 0.1 = 0.30000000000000004
         let s = wg.snap(Coord::new(0.3, 0.55));
         assert_eq!(s.x, edge);

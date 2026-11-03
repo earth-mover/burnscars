@@ -253,8 +253,11 @@ mod tests {
     use crate::input::Envelope;
 
     fn wg(grid: &Grid, e: (f64, f64, f64, f64)) -> WalkerGrid {
-        WalkerGrid::for_envelope(grid, &Envelope { xmin: e.0, ymin: e.1, xmax: e.2, ymax: e.3 })
-            .expect("region")
+        WalkerGrid::for_envelope(
+            &grid.north_up().grid,
+            &Envelope { xmin: e.0, ymin: e.1, xmax: e.2, ymax: e.3 },
+        )
+        .expect("region")
     }
     fn ring(pts: &[(f64, f64)]) -> Vec<Coord> {
         pts.iter().map(|&(x, y)| Coord::new(x, y)).collect()

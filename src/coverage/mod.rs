@@ -23,7 +23,7 @@ use crate::geom::{
     coord::Coord,
     walker_grid::{LocalCol, LocalRow},
 };
-use crate::grid::{GeomId, Grid};
+use crate::grid::{GeomId, NorthUpGrid};
 use crate::input::InputBuf;
 use crate::input::RingRole;
 use crate::output::BurnResult;
@@ -60,7 +60,7 @@ pub(crate) struct CoverageScratch {
 /// ([src/raster_cell_intersection.cpp](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp)); one sweep per geometry.
 pub(crate) fn burn(
     input: &InputBuf,
-    grid: &Grid,
+    grid: &NorthUpGrid,
     id: GeomId,
     walk_s: &mut WalkScratch,
     s: &mut CoverageScratch,

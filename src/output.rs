@@ -6,7 +6,8 @@
 
 use std::ops::Range;
 
-use crate::grid::{Col, GeomId, Row, Span};
+use crate::coverage::fraction::to_f32;
+use crate::grid::{Col, Flip, GeomId, Row, Span};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Runs {
@@ -286,6 +287,87 @@ impl BurnResult {
             lines: s.lines..self.lines.len(),
             points: s.points..self.points.len(),
         });
+    }
+
+    /// Maps the rows of the records after `s` to the caller's rows, in place.
+    pub(crate) fn map_tail(&mut self, s: GeomStart, rows: Flip) {
+        if !rows.is_flip() {
+            return;
+        }
+        let tails = [
+            (&mut self.runs.row, s.runs),
+            (&mut self.edges.row, s.edges),
+            (&mut self.lines.row, s.lines),
+            (&mut self.points.row, s.points),
+        ];
+        for (row, from) in tails {
+            for r in row.get_mut(from..).into_iter().flatten() {
+                *r = rows.index(*r);
+            }
+        }
+    }
+
+    /// Makes the records after `s` one record per cell, when more than one burn of one
+    /// geometry wrote them: runs join, edge fractions and line lengths add.
+    /// An edge in a run cell goes: the run already holds the full cell.
+    pub(crate) fn merge_tail(&mut self, id: GeomId, s: GeomStart) {
+        let r = &self.runs;
+        let mut runs: Vec<(u32, u32, u32)> =
+            (s.runs..r.len()).map(|i| (r.row[i], r.col_start[i], r.col_end[i])).collect();
+        let e = &self.edges;
+        let mut edges: Vec<(u32, u32, f32)> =
+            (s.edges..e.len()).map(|i| (e.row[i], e.col[i], e.fraction[i])).collect();
+        let l = &self.lines;
+        let mut lines: Vec<(u32, u32, f32)> =
+            (s.lines..l.len()).map(|i| (l.row[i], l.col[i], l.length[i])).collect();
+        self.truncate(s);
+
+        runs.sort_unstable();
+        let mut joined: Vec<(u32, u32, u32)> = Vec::with_capacity(runs.len());
+        for (row, a, b) in runs {
+            match joined.last_mut() {
+                Some(last) if last.0 == row && a <= last.2 => last.2 = last.2.max(b),
+                _ => joined.push((row, a, b)),
+            }
+        }
+        for &(row, a, b) in &joined {
+            self.push(id, Emit::Run { row: Row(row), cols: Span::from_parts(Col(a), Col(b)) });
+        }
+        let in_run = |row: u32, col: u32| {
+            let i = joined.partition_point(|&(r, a, _)| (r, a) <= (row, col));
+            i > 0 && joined.get(i - 1).is_some_and(|&(r, _, b)| r == row && col < b)
+        };
+        // Stable sorts: the sums keep the burn order of the copies.
+        edges.sort_by_key(|&(r, c, _)| (r, c));
+        for g in edges.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+            let Some(&(row, col, _)) = g.first() else { continue };
+            if !in_run(row, col) {
+                let f = g.iter().map(|x| f64::from(x.2)).sum::<f64>().min(1.0);
+                self.push(id, Emit::Edge { row: Row(row), col: Col(col), fraction: to_f32(f) });
+            }
+        }
+        lines.sort_by_key(|&(r, c, _)| (r, c));
+        for g in lines.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+            let Some(&(row, col, _)) = g.first() else { continue };
+            let length = to_f32(g.iter().map(|x| f64::from(x.2)).sum::<f64>());
+            self.push(id, Emit::Line { row: Row(row), col: Col(col), length });
+        }
+    }
+
+    /// Drops the run, edge and line records after `s`.
+    fn truncate(&mut self, s: GeomStart) {
+        let Self { runs, edges, lines, .. } = self;
+        for v in [&mut runs.row, &mut runs.col_start, &mut runs.col_end, &mut runs.id] {
+            v.truncate(s.runs);
+        }
+        for v in [&mut edges.row, &mut edges.col, &mut edges.id] {
+            v.truncate(s.edges);
+        }
+        edges.fraction.truncate(s.edges);
+        for v in [&mut lines.row, &mut lines.col, &mut lines.id] {
+            v.truncate(s.lines);
+        }
+        lines.length.truncate(s.lines);
     }
 
     /// Row-major (CSR) index over `rows`.

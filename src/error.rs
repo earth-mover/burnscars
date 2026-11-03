@@ -51,6 +51,8 @@ pub enum BurnError {
     ShortLine { at: At },
     #[error("{at}: walk did not converge after {coords} coordinates")]
     WalkDiverged { at: At, coords: usize },
+    #[error("geometry {id}: x extent {width} is wider than the lattice period {period}")]
+    WiderThanPeriod { id: GeomId, width: f64, period: f64 },
     #[error("geometry {id}: internal error: {detail}")]
     Internal { id: GeomId, detail: &'static str },
 }
