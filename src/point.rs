@@ -9,7 +9,7 @@
 //! - exactextract `get_row`: <https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L85>
 
 use crate::grid::Pos;
-use crate::grid::{GeomId, Grid};
+use crate::grid::{Col, GeomId, Grid, Row};
 use crate::input::InputBuf;
 use crate::output::BurnResult;
 use crate::output::Emit;
@@ -22,6 +22,36 @@ pub(crate) fn burn(input: &InputBuf, grid: &Grid, id: GeomId, out: &mut BurnResu
             && grid.cols().contains(col)
         {
             out.push(id, Emit::Point { row, col });
+        }
+    }
+}
+
+/// Points on copies of one window, one period apart: each point once per cell.
+/// A hit on the closed far x edge goes when another copy holds the point:
+/// on a full-period grid that edge is the seam, and the other copy's near edge wins.
+pub(crate) fn burn_shifted<I>(input: &InputBuf, grids: &I, id: GeomId, out: &mut BurnResult)
+where
+    I: Iterator<Item = Grid> + Clone,
+{
+    let mut hits: Vec<(Row, Col, bool)> = Vec::new();
+    for p in input.points() {
+        hits.clear();
+        for grid in grids.clone() {
+            if let (Pos::In(row), Pos::In(col)) = (grid.row_of(p.y), grid.col_of(p.x))
+                && grid.rows().contains(row)
+                && grid.cols().contains(col)
+            {
+                let far = grid.lattice().x_edge(i64::from(grid.full_cols().end().0));
+                hits.push((row, col, p.x == far));
+            }
+        }
+        let near = hits.iter().any(|h| !h.2);
+        hits.sort_unstable_by_key(|h| (h.0, h.1, h.2)); // a near hit first in each cell
+        hits.dedup_by_key(|h| (h.0, h.1));
+        for &(row, col, far) in &hits {
+            if !(far && near) {
+                out.push(id, Emit::Point { row, col });
+            }
         }
     }
 }

@@ -7,7 +7,7 @@
 use std::fmt;
 use std::ops::Range;
 
-/// Global lattice row. Row 0 is at the top.
+/// Global lattice row. Row 0 is next to the `y0` edge of the lattice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Row(pub u32);
 
@@ -99,8 +99,10 @@ pub enum Pos<T> {
 pub enum GridError {
     #[error("non-finite lattice value: {0}")]
     NonFinite(&'static str),
-    #[error("resolution must be > 0: dx = {dx}, dy = {dy}")]
+    #[error("resolution must be nonzero: dx = {dx}, dy = {dy}")]
     Resolution { dx: f64, dy: f64 },
+    #[error("period must be finite and > 0: {0}")]
+    Period(f64),
     #[error("empty span: start {start}, end {end}")]
     EmptySpan { start: u32, end: u32 },
     #[error("window rows {rows:?}, cols {cols:?} is outside the full grid")]
@@ -110,7 +112,46 @@ pub enum GridError {
 }
 
 /// Infinite regular lattice. Column edge k is `x0 + k*dx`; row edge k is `y0 - k*dy`.
-/// Row 0 is at the top. Cell (r, c) is `[x_edge(c), x_edge(c+1)] x [y_edge(r+1), y_edge(r)]`.
+///
+/// The signs of the steps give the index directions:
+///
+/// - `dx > 0`: `x0` is the west edge and columns run east. `dx < 0`: `x0` is the east edge
+///   and columns run west.
+/// - `dy > 0`: `y0` is the north edge and rows run south. `dy < 0`: `y0` is the south edge
+///   and rows run north.
+///
+/// So cell (r, c) is the box between `x_edge(c)`, `x_edge(c+1)`, `y_edge(r)` and
+/// `y_edge(r+1)`, for every sign. Every output record is in these indices.
+///
+/// The burn result does not depend on the signs: a burn on a flipped lattice gives the
+/// records of the positive-step lattice over the same cells, with the indices flipped.
+/// The edge rules are geographic, as on the positive-step lattice (a point on a shared
+/// edge goes into the cell to its east and to its south).
+///
+/// [`Lattice::with_period`] makes x periodic (a longitude): geometry x and cell x then
+/// compare modulo the period.
+///
+/// # Example
+///
+/// A brick of 3 rows by 4 columns: latitude centres 10, 20, 30 (ascending, so row 0 is
+/// south), longitude centres 170, 180, 190, 200 (a 0..360 grid). The zone is in
+/// [-180, 180).
+///
+/// ```
+/// use burnscars::{Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span};
+/// use geo_types::Rect;
+///
+/// // x0 = 165 is the west edge; y0 = 5 is the south edge, so dy < 0.
+/// let lattice = Lattice::new(165.0, 5.0, 10.0, -10.0)?.with_period(360.0)?;
+/// let grid = Grid::new(lattice, Span::new(Row(0), Row(3))?, Span::new(Col(0), Col(4))?)?;
+/// let zone = Rect::new((-175.0, 15.0), (-165.0, 35.0));
+/// let out = Burner::new(Mode::Approx).burn(&grid, [(GeomId(0), zone)])?;
+/// let runs: Vec<(u32, std::ops::Range<u32>)> =
+///     out.runs.iter().map(|r| (r.row.0, r.cols.range())).collect();
+/// // The cells at longitude 190, latitude 30 and 20.
+/// assert_eq!(runs, [(2, 2..3), (1, 2..3)]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lattice {
     x0: f64,
@@ -121,6 +162,7 @@ pub struct Lattice {
     /// then correct, so a rounding difference from a division cannot change the result.
     inv_dx: f64,
     inv_dy: f64,
+    period: Option<f64>,
 }
 
 #[expect(clippy::cast_precision_loss, reason = "lattice indices stay below 2^53")]
@@ -129,17 +171,35 @@ pub(crate) fn to_f64(i: i64) -> f64 {
 }
 
 impl Lattice {
-    /// Errors: non-finite value, `dx <= 0`, `dy <= 0`.
+    /// Errors: non-finite value, `dx == 0`, `dy == 0`. The signs of the steps set the
+    /// index directions; see [`Lattice`].
     pub fn new(x0: f64, y0: f64, dx: f64, dy: f64) -> Result<Self, GridError> {
         for (name, v) in [("x0", x0), ("y0", y0), ("dx", dx), ("dy", dy)] {
             if !v.is_finite() {
                 return Err(GridError::NonFinite(name));
             }
         }
-        if !(dx > 0.0 && dy > 0.0) {
+        if dx == 0.0 || dy == 0.0 {
             return Err(GridError::Resolution { dx, dy });
         }
-        Ok(Self { x0, y0, dx, dy, inv_dx: 1.0 / dx, inv_dy: 1.0 / dy })
+        Ok(Self { x0, y0, dx, dy, inv_dx: 1.0 / dx, inv_dy: 1.0 / dy, period: None })
+    }
+    /// Makes x periodic with `period` (e.g. 360 for a longitude). Geometry x and cell x
+    /// then compare modulo the period: a lattice that runs over 0..360 burns geometries
+    /// in [-180, 180), and a window can cross the seam.
+    ///
+    /// A geometry must not be wider in x than one period ([`BurnError::WiderThanPeriod`]).
+    /// When the full grid is wider than one period, a place on the earth falls in more
+    /// than one column, and each of them gets its record.
+    ///
+    /// Errors: `period` is not finite or not > 0.
+    ///
+    /// [`BurnError::WiderThanPeriod`]: crate::BurnError::WiderThanPeriod
+    pub fn with_period(self, period: f64) -> Result<Self, GridError> {
+        if !(period.is_finite() && period > 0.0) {
+            return Err(GridError::Period(period));
+        }
+        Ok(Self { period: Some(period), ..self })
     }
     #[must_use]
     pub fn x0(&self) -> f64 {
@@ -149,13 +209,19 @@ impl Lattice {
     pub fn y0(&self) -> f64 {
         self.y0
     }
+    /// The signed column step.
     #[must_use]
     pub fn dx(&self) -> f64 {
         self.dx
     }
+    /// The signed row step.
     #[must_use]
     pub fn dy(&self) -> f64 {
         self.dy
+    }
+    #[must_use]
+    pub fn period(&self) -> Option<f64> {
+        self.period
     }
     #[must_use]
     pub fn x_edge(&self, col: i64) -> f64 {
@@ -172,6 +238,10 @@ impl Lattice {
     /// Row centre, controlledburn formula `ymax - (r + 0.5) * dy`.
     pub(crate) fn y_mid(&self, row: i64) -> f64 {
         self.y0 - (to_f64(row) + 0.5) * self.dy
+    }
+    /// The layout that the ported algorithms take: north-up, x ascending, no period.
+    pub(crate) fn is_north_up(&self) -> bool {
+        self.dx > 0.0 && self.dy > 0.0 && self.period.is_none()
     }
 }
 
@@ -257,12 +327,18 @@ impl Grid {
     pub fn full_cols(&self) -> Span<Col> {
         self.full_cols
     }
+    /// With a period, `x` first moves by whole periods into the period that starts at the
+    /// west edge of the full grid.
+    ///
     /// exactextract `Grid<infinite_extent>::get_column`
     /// ([src/grid.h#L60](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/grid.h#L60)) on the lattice;
     /// padding is `Before` / `After`. The cell edges are the authority.
     #[must_use]
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn col_of(&self, x: f64) -> Pos<Col> {
+        if !self.lattice.is_north_up() {
+            return self.col_of_mapped(x);
+        }
         let l = &self.lattice;
         let (s, e) = (i64::from(self.full_cols.start.0), i64::from(self.full_cols.end.0));
         if !(x >= l.x_edge(s)) {
@@ -291,6 +367,9 @@ impl Grid {
     #[must_use]
     #[expect(clippy::neg_cmp_op_on_partial_ord, reason = "the negated form also rejects NaN")]
     pub fn row_of(&self, y: f64) -> Pos<Row> {
+        if !self.lattice.is_north_up() {
+            return self.row_of_mapped(y);
+        }
         let l = &self.lattice;
         let (s, e) = (i64::from(self.full_rows.start.0), i64::from(self.full_rows.end.0));
         if !(y <= l.y_edge(s)) {
@@ -311,6 +390,112 @@ impl Grid {
             r += 1;
         }
         Pos::In(Row(to_u32(r)))
+    }
+}
+
+impl Grid {
+    /// This grid as the north-up, ascending, unwrapped grid over the same cells.
+    pub(crate) fn north_up(&self) -> NorthUp {
+        let l = &self.lattice;
+        let rows = Flip::new(l.dy < 0.0, self.full_rows);
+        let cols = Flip::new(l.dx < 0.0, self.full_cols);
+        // The edge of the flipped index s + e - k is the edge of k.
+        let x0 = cols.sum.map_or(l.x0, |sum| l.x0 + to_f64(sum) * l.dx);
+        let y0 = rows.sum.map_or(l.y0, |sum| l.y0 - to_f64(sum) * l.dy);
+        let (dx, dy) = (l.dx.abs(), l.dy.abs());
+        let lattice = Lattice { x0, y0, dx, dy, inv_dx: 1.0 / dx, inv_dy: 1.0 / dy, period: None };
+        let grid = Grid {
+            lattice,
+            full_rows: self.full_rows,
+            full_cols: self.full_cols,
+            rows: rows.span(self.rows),
+            cols: cols.span(self.cols),
+        };
+        NorthUp { grid, period: l.period, rows, cols }
+    }
+
+    fn col_of_mapped(&self, x: f64) -> Pos<Col> {
+        let n = self.north_up();
+        let x = match n.period {
+            Some(p) => {
+                let west = n.grid.lattice.x_edge(i64::from(n.grid.full_cols.start.0));
+                west + (x - west).rem_euclid(p)
+            }
+            None => x,
+        };
+        n.cols.pos(n.grid.col_of(x))
+    }
+
+    fn row_of_mapped(&self, y: f64) -> Pos<Row> {
+        let n = self.north_up();
+        n.rows.pos(n.grid.row_of(y))
+    }
+}
+
+/// A grid as the layout of the ported algorithms, and the map back to the caller's indices.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NorthUp {
+    /// North-up, x ascending, no period.
+    pub(crate) grid: Grid,
+    pub(crate) period: Option<f64>,
+    pub(crate) rows: Flip,
+    pub(crate) cols: Flip,
+}
+
+impl NorthUp {
+    /// The north-up grid moved east by `k` periods.
+    pub(crate) fn shifted(&self, k: i64, period: f64) -> Grid {
+        let mut g = self.grid;
+        if k != 0 {
+            g.lattice.x0 += to_f64(k) * period;
+        }
+        g
+    }
+}
+
+/// An index flip over a full span `[s, e)`: `k` maps to `s + e - 1 - k`. It is its own inverse.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Flip {
+    /// `s + e`, or `None` for no flip.
+    sum: Option<i64>,
+}
+
+impl Flip {
+    fn new<T: Copy + Ord + Into<u32>>(flip: bool, full: Span<T>) -> Self {
+        Self { sum: flip.then(|| i64::from(full.start.into()) + i64::from(full.end.into())) }
+    }
+    pub(crate) fn is_flip(self) -> bool {
+        self.sum.is_some()
+    }
+    pub(crate) fn index(self, k: u32) -> u32 {
+        self.sum.map_or(k, |sum| to_u32(sum - 1 - i64::from(k)))
+    }
+    /// Half-open `[a, b)` to the flipped half-open range.
+    pub(crate) fn range(self, a: u32, b: u32) -> (u32, u32) {
+        self.sum.map_or((a, b), |sum| (to_u32(sum - i64::from(b)), to_u32(sum - i64::from(a))))
+    }
+    fn span<T: Copy + Ord + From<u32> + Into<u32>>(self, s: Span<T>) -> Span<T> {
+        let (a, b) = self.range(s.start.into(), s.end.into());
+        Span::from_parts(T::from(a), T::from(b))
+    }
+    fn pos<T: Copy + From<u32> + Into<u32>>(self, p: Pos<T>) -> Pos<T> {
+        match (self.is_flip(), p) {
+            (_, Pos::In(t)) => Pos::In(T::from(self.index(t.into()))),
+            (false, p) => p,
+            (true, Pos::Before) => Pos::After,
+            (true, Pos::After) => Pos::Before,
+        }
+    }
+}
+
+impl From<u32> for Row {
+    fn from(v: u32) -> Self {
+        Self(v)
+    }
+}
+impl From<u32> for Col {
+    fn from(v: u32) -> Self {
+        Self(v)
     }
 }
 
@@ -336,7 +521,14 @@ mod tests {
     fn lattice_rejects_bad_values() {
         assert!(matches!(Lattice::new(f64::NAN, 0.0, 1.0, 1.0), Err(GridError::NonFinite("x0"))));
         assert!(matches!(Lattice::new(0.0, 0.0, 0.0, 1.0), Err(GridError::Resolution { .. })));
-        assert!(matches!(Lattice::new(0.0, 0.0, 1.0, -1.0), Err(GridError::Resolution { .. })));
+        assert!(matches!(Lattice::new(0.0, 0.0, 1.0, 0.0), Err(GridError::Resolution { .. })));
+        assert!(Lattice::new(0.0, 0.0, -1.0, -1.0).is_ok());
+        for p in [0.0, -360.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                Lattice::new(0.0, 0.0, 1.0, 1.0).and_then(|l| l.with_period(p)),
+                Err(GridError::Period(_))
+            ));
+        }
         assert!(matches!(
             Grid::from_extent(0.0, 0.0, -1.0, 10.0, 10, 10),
             Err(GridError::Extent(_))
