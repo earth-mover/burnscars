@@ -21,8 +21,8 @@ jobs:
   publish:
     name: publish to crates.io
     runs-on: ubuntu-latest
-    # Add required reviewers to this environment to gate releases.
-    environment: release
+    # Add required reviewers to the crates-io environment to gate releases.
+    environment: crates-io
     permissions:
       contents: write # create the GitHub release
       id-token: write # crates.io trusted publishing
