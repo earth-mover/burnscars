@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: just@1.59.0,cargo-nextest@0.9.148,uv@0.13.1
       # Regenerate into a temporary directory and compare with tolerances, not bytes:
