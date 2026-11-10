@@ -52,7 +52,7 @@ jobs:
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
           components: rustfmt
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: just@1.59.0
       - run: just format --check
@@ -75,7 +75,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: just@1.59.0
       - run: just lint
@@ -97,7 +97,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: just@1.59.0,cargo-nextest@0.9.148
       # nextest does not run doctests, so both.
@@ -113,7 +113,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: just@1.59.0,cargo-deny@0.20.2
       - run: just check-deps
@@ -125,7 +125,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.32
         with:
           tool: just@1.59.0,taplo@0.10.0
       - run: just format-toml --check
