@@ -4,7 +4,8 @@
 mod common;
 
 use burnscars::{
-    BurnResult, Burner, Col, GeomId, Grid, Lattice, Row, Rule, Span, Spans, XAxis, YAxis, YOrigin,
+    BurnResult, Burner, Col, GeomId, Grid, Lattice, Origin, Row, Rule, Span, Stretches, XAxis,
+    YAxis, YOrigin,
 };
 use common::{Expanded, burn_mixed, expanded, expanded_spans, is_polygonal, ls};
 use geo_types::{Geometry, LineString, MultiPoint, Point, Polygon};
@@ -182,12 +183,12 @@ proptest! {
             let k = split.min(geoms.len());
             let mut b = Burner::new(rule);
             let mut out = BurnResult::default();
-            let mut spans = Spans::default();
+            let mut spans = Stretches::new(rule);
             let items = geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x));
             let polys = items.clone().filter(|(_, x)| is_polygonal(x));
             let rest = items.filter(|(_, x)| !is_polygonal(x));
-            b.burn_polygons(&g, polys.clone().take(k), &mut spans).expect("a");
-            Burner::new(rule).burn_polygons(&g, polys.skip(k), &mut spans).expect("b");
+            b.burn_polygons(&g, polys.clone().take(k), Origin::Grid, &mut spans).expect("a");
+            Burner::new(rule).burn_polygons(&g, polys.skip(k), Origin::Grid, &mut spans).expect("b");
             b.burn_into(&g, rest.clone().take(k), &mut out).expect("a");
             Burner::new(rule).burn_into(&g, rest.skip(k), &mut out).expect("b");
             let mut split_burn = expanded(&out);

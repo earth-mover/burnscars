@@ -1,11 +1,13 @@
-//! Output: the polygon span table, and the line and point tables in `SoA` form.
+//! Output: the polygon stretch table, and the line and point tables in `SoA` form.
 //!
 //! The line and point tables follow controlledburn (Apache-2.0, Copyright 2025 Michael Sumner),
 //! commit 1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558: `cpp/include/controlledburn/output.hpp`.
-//! The polygon output is `Spans`, which replaces its runs and edges tables.
+//! The polygon output is `Stretches`, which replaces its runs and edges tables.
 
+use std::cmp::Reverse;
 use std::ops::Range;
 
+use crate::burner::Rule;
 use crate::coverage::fraction::{CellClass, to_f32};
 use crate::error::BurnError;
 use crate::grid::{Col, Flip, GeomId, Row, Span};
@@ -17,7 +19,7 @@ use crate::grid::{Col, Flip, GeomId, Row, Span};
 /// It is the sparse coverage matrix `W[geometry, cell]` in a CSR form whose row is the fiber.
 /// Zonal statistics are `(W v) / (W 1)` for a raster `v`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Spans {
+pub struct Stretches {
     /// Fiber `f` is geometry `id[f]` in row `row[f]`. Fibers are strictly sorted by `(id, row)`.
     pub id: Vec<u32>,
     pub row: Vec<u32>,
@@ -27,32 +29,28 @@ pub struct Spans {
     pub col_start: Vec<u32>,
     pub col_end: Vec<u32>,
     /// `None` under `Rule::Touched` and `Rule::Centre`.
-    pub values: Option<SpanValues>,
+    pub values: Option<StretchValues>,
 }
 
 /// The weights of the stretches. Stretch `s` holds `weight[value_ptr[s]..value_ptr[s + 1]]`:
 /// one value (a run) or one value per cell (a block).
 #[derive(Clone, Debug, PartialEq)]
-pub struct SpanValues {
+pub struct StretchValues {
     /// One entry per stretch, plus one. `[0]` when empty.
     pub value_ptr: Vec<u32>,
     pub weight: Vec<f32>,
 }
 
-impl Default for Spans {
-    fn default() -> Self {
-        Self {
-            id: Vec::new(),
-            row: Vec::new(),
-            fiber_ptr: vec![0],
-            col_start: Vec::new(),
-            col_end: Vec::new(),
-            values: None,
-        }
-    }
+/// The capacity to reserve in a [`Stretches`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StretchCounts {
+    pub fibers: usize,
+    pub stretches: usize,
+    /// Ignored for a rule with no values.
+    pub values: usize,
 }
 
-impl Default for SpanValues {
+impl Default for StretchValues {
     fn default() -> Self {
         Self { value_ptr: vec![0], weight: Vec::new() }
     }
@@ -60,40 +58,47 @@ impl Default for SpanValues {
 
 /// Column lengths at the start of one geometry, to roll back a failed encode.
 #[derive(Clone, Copy, Debug)]
-struct SpansMark {
+pub(crate) struct SpansMark {
     fibers: usize,
     stretches: usize,
     values: usize,
 }
 
-impl Spans {
-    /// Reserves every column, with values. A burn under a rule with no values drops them
-    /// while `self` holds no fiber.
+impl Stretches {
+    /// An empty table for `rule`: `values` is `Some` exactly under `Rule::Fraction`.
     #[must_use]
-    pub fn with_capacity(fibers: usize, stretches: usize, values: usize) -> Self {
-        let mut fiber_ptr = Vec::with_capacity(fibers + 1);
+    pub fn new(rule: Rule) -> Self {
+        Self::with_capacity(rule, StretchCounts::default())
+    }
+
+    /// [`Stretches::new`] with every column reserved.
+    #[must_use]
+    pub fn with_capacity(rule: Rule, n: StretchCounts) -> Self {
+        let mut fiber_ptr = Vec::with_capacity(n.fibers + 1);
         fiber_ptr.push(0);
-        let mut value_ptr = Vec::with_capacity(stretches + 1);
-        value_ptr.push(0);
+        let values = rule.has_values().then(|| {
+            let mut value_ptr = Vec::with_capacity(n.stretches + 1);
+            value_ptr.push(0);
+            StretchValues { value_ptr, weight: Vec::with_capacity(n.values) }
+        });
         Self {
-            id: Vec::with_capacity(fibers),
-            row: Vec::with_capacity(fibers),
+            id: Vec::with_capacity(n.fibers),
+            row: Vec::with_capacity(n.fibers),
             fiber_ptr,
-            col_start: Vec::with_capacity(stretches),
-            col_end: Vec::with_capacity(stretches),
-            values: Some(SpanValues { value_ptr, weight: Vec::with_capacity(values) }),
+            col_start: Vec::with_capacity(n.stretches),
+            col_end: Vec::with_capacity(n.stretches),
+            values,
         }
     }
 
-    /// Resets every column to the `Default` contents and keeps the capacity.
-    /// `values` stays `Some` or `None`.
+    /// Empties every column and keeps the capacity and the rule.
     pub fn clear(&mut self) {
         self.truncate(SpansMark { fibers: 0, stretches: 0, values: 0 });
     }
 
-    /// The number of stretches.
+    /// The number of stretches, not of fibers.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub fn stretches(&self) -> usize {
         self.col_start.len()
     }
 
@@ -102,7 +107,7 @@ impl Spans {
         self.col_start.is_empty()
     }
 
-    fn mark(&self) -> SpansMark {
+    pub(crate) fn mark(&self) -> SpansMark {
         SpansMark {
             fibers: self.id.len(),
             stretches: self.col_start.len(),
@@ -110,7 +115,7 @@ impl Spans {
         }
     }
 
-    fn truncate(&mut self, m: SpansMark) {
+    pub(crate) fn truncate(&mut self, m: SpansMark) {
         self.id.truncate(m.fibers);
         self.row.truncate(m.fibers);
         self.fiber_ptr.truncate(m.fibers + 1);
@@ -124,16 +129,13 @@ impl Spans {
         }
     }
 
-    /// Sets `values` to the rule's form while no fiber is written; after that, a change is refused.
-    pub(crate) fn prepare(&mut self, values: bool) -> Result<(), BurnError> {
-        if self.values.is_some() == values {
-            return Ok(());
+    /// Refuses a rule whose value form is not the one of `self`. It never changes `self`.
+    pub(crate) fn check_rule(&self, rule: Rule) -> Result<(), BurnError> {
+        if self.values.is_some() == rule.has_values() {
+            Ok(())
+        } else {
+            Err(BurnError::RuleMismatch)
         }
-        if !self.id.is_empty() {
-            return Err(BurnError::RuleMismatch);
-        }
-        self.values = values.then(SpanValues::default);
-        Ok(())
     }
 
     /// `(id, row, col) -> weight`, 1.0 with no values (test only).
@@ -177,6 +179,8 @@ impl Rec {
     }
 
     pub(crate) fn edge(row: Row, col: Col, fraction: f32) -> Self {
+        // A full cell is a run; `is_edge` reads the weight.
+        debug_assert!(fraction < 1.0, "edge weight {fraction}");
         Self { row: row.0, start: col.0, end: col.0 + 1, weight: fraction }
     }
 
@@ -204,6 +208,10 @@ impl PolyRecs {
         self.recs.capacity() * size_of::<Rec>()
     }
 
+    pub(crate) fn reserve(&mut self, n: usize) {
+        self.recs.reserve(n);
+    }
+
     /// Maps the rows to the caller's rows, in place.
     pub(crate) fn map_rows(&mut self, rows: Flip) {
         if rows.is_flip() {
@@ -211,29 +219,33 @@ impl PolyRecs {
         }
     }
 
-    /// Merges the records into one per cell and appends the fibers of `id` to `out`.
-    /// On error, `out` is as it was before.
+    /// Merges the records into one per cell and appends the fibers of `id` to `out`,
+    /// less `origin` (`(row, col)`). On error, `out` is as it was before.
     ///
     /// The merge, in sorted order: overlapping or touching runs join; an edge inside a run
     /// goes; the edges of one cell add in `f64`, at most 1, and a full sum joins the runs.
     pub(crate) fn encode(
         &mut self,
         id: GeomId,
-        values: bool,
-        out: &mut Spans,
+        origin: (u32, u32),
+        out: &mut Stretches,
     ) -> Result<(), BurnError> {
         // Runs before edges at one start: an edge then meets every run that can hold it.
         let key = |r: &Rec| (r.row, r.start, r.is_edge());
-        // Only a flip or two copies give records out of order.
-        // Stable: the sums keep the burn order of the copies.
-        if !self.recs.is_sorted_by_key(key) {
-            self.recs.sort_by_key(key);
-        }
+        let same_row = |a: &Rec, b: &Rec| a.row == b.row;
         let mark = out.mark();
-        let r = self
-            .recs
-            .chunk_by(|a, b| a.row == b.row)
-            .try_for_each(|row| Fiber::new(id, values, out).encode(row));
+        let mut fiber = |row: &[Rec]| Fiber::new(id, origin, out).encode(row);
+        let r = if self.recs.is_sorted_by_key(key) {
+            self.recs.chunk_by(same_row).try_for_each(&mut fiber)
+        } else if self.recs.is_sorted_by_key(|r| (Reverse(r.row), r.start, r.is_edge())) {
+            // One copy on a south-up grid: the sweep order with the rows flipped.
+            self.recs.chunk_by(same_row).rev().try_for_each(&mut fiber)
+        } else {
+            // Two or more copies. The weight bits make the order total, so the sums do not
+            // depend on the burn order of the copies.
+            self.recs.sort_unstable_by_key(|r| (r.row, r.start, r.is_edge(), r.weight.to_bits()));
+            self.recs.chunk_by(same_row).try_for_each(&mut fiber)
+        };
         if r.is_err() {
             out.truncate(mark);
         }
@@ -244,20 +256,21 @@ impl PolyRecs {
 /// The encoder of one fiber. At most one of `run` and `block` is open.
 struct Fiber<'o> {
     id: GeomId,
-    values: bool,
-    out: &'o mut Spans,
+    origin: (u32, u32),
+    out: &'o mut Stretches,
     run: Option<(u32, u32)>,
     block: Option<(u32, u32)>,
 }
 
 impl<'o> Fiber<'o> {
-    fn new(id: GeomId, values: bool, out: &'o mut Spans) -> Self {
-        Self { id, values, out, run: None, block: None }
+    fn new(id: GeomId, origin: (u32, u32), out: &'o mut Stretches) -> Self {
+        Self { id, origin, out, run: None, block: None }
     }
 
     /// `recs` is one row, sorted by `(start, is_edge)`.
     fn encode(mut self, recs: &[Rec]) -> Result<(), BurnError> {
         let Some(row) = recs.first().map(|r| r.row) else { return Ok(()) };
+        let values = self.out.values.is_some();
         let first = self.out.col_start.len();
         for g in recs.chunk_by(|a, b| a.is_edge() && b.is_edge() && a.start == b.start) {
             let Some(&r) = g.first() else { continue };
@@ -271,18 +284,25 @@ impl<'o> Fiber<'o> {
             let sum = g.iter().map(|e| f64::from(e.weight)).sum::<f64>().min(1.0);
             match CellClass::of(to_f32(sum)) {
                 CellClass::Empty => {}
-                CellClass::Edge(w) if self.values => self.add_edge(r.start, w)?,
+                CellClass::Edge(w) if values => self.add_edge(r.start, w)?,
                 CellClass::Edge(_) | CellClass::Full => self.add_run(r.start, r.start + 1)?,
             }
         }
         self.close_run()?;
         self.close_block()?;
         if self.out.col_start.len() > first {
+            let row = self.local(row, self.origin.0)?;
             self.out.id.push(self.id.0);
             self.out.row.push(row);
             self.out.fiber_ptr.push(self.out.col_start.len());
         }
         Ok(())
+    }
+
+    /// `v - origin`. A record lies in the window, so this does not underflow.
+    fn local(&self, v: u32, origin: u32) -> Result<u32, BurnError> {
+        v.checked_sub(origin)
+            .ok_or(BurnError::Internal { id: self.id, detail: "record before the window origin" })
     }
 
     fn add_run(&mut self, a: u32, b: u32) -> Result<(), BurnError> {
@@ -327,6 +347,7 @@ impl<'o> Fiber<'o> {
     }
 
     fn push_stretch(&mut self, a: u32, b: u32) -> Result<(), BurnError> {
+        let (a, b) = (self.local(a, self.origin.1)?, self.local(b, self.origin.1)?);
         self.out.col_start.push(a);
         self.out.col_end.push(b);
         if let Some(v) = &mut self.out.values {
@@ -421,7 +442,7 @@ pub(crate) enum Emit {
     Point { row: Row, col: Col },
 }
 
-/// The result of a line and point burn. Polygons go to [`Spans`].
+/// The result of a line and point burn. Polygons go to [`Stretches`].
 ///
 /// - `lines`: per cell, the length of the line in the cell.
 /// - `points`: per point, its cell.
@@ -638,7 +659,8 @@ mod tests {
 
     #[test]
     fn spans_clear_resets_to_default_and_keeps_capacity() {
-        let mut s = Spans::with_capacity(4, 8, 16);
+        let n = StretchCounts { fibers: 4, stretches: 8, values: 16 };
+        let mut s = Stretches::with_capacity(Rule::Fraction, n);
         s.id.push(1);
         s.row.push(0);
         s.col_start.push(2);
@@ -646,7 +668,7 @@ mod tests {
         s.fiber_ptr.push(1);
         let cap = s.col_start.capacity();
         s.clear();
-        assert_eq!(s, Spans { values: Some(SpanValues::default()), ..Spans::default() });
+        assert_eq!(s, Stretches::new(Rule::Fraction));
         assert_eq!(s.col_start.capacity(), cap);
     }
 }

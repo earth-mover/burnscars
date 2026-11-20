@@ -4,7 +4,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use burnscars::{GeomId, Grid, Rule, Spans};
+use burnscars::{GeomId, Grid, Rule, Stretches};
 use common::{burn_spans, densify, hex, known_diff_cells, read_csv};
 
 const CASES: &str = include_str!("../fixtures/oracle/cases.csv");
@@ -27,14 +27,14 @@ fn grid_of(r: &[String]) -> Grid {
 }
 
 #[expect(clippy::expect_used, reason = "test helper: a bad fixture row is a test bug")]
-fn burn(case: &[String], rule: Rule) -> Spans {
+fn burn(case: &[String], rule: Rule) -> Stretches {
     let bytes = hex(&case[1]);
     let g = wkb::reader::read_wkb(&bytes).expect("wkb");
     burn_spans(rule, &grid_of(case), [(GeomId(0), &g)]).expect("burn")
 }
 
 /// Per-cell fraction (1 with no values), cells below TOL removed.
-fn cells(r: &Spans) -> BTreeMap<(u32, u32), f64> {
+fn cells(r: &Stretches) -> BTreeMap<(u32, u32), f64> {
     densify(r)
         .into_iter()
         .map(|((_, row, col), w)| ((row, col), f64::from(w)))

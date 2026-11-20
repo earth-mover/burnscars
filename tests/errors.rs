@@ -2,24 +2,27 @@
 
 mod common;
 
-use burnscars::{At, BurnError, BurnResult, Burner, GeomId, GeomKind, Rule, Spans};
+use burnscars::{At, BurnError, BurnResult, Burner, GeomId, GeomKind, Origin, Rule, Stretches};
 use common::{grid, ls, poly};
-use geo_types::{Geometry, GeometryCollection};
+use geo_types::{Geometry, GeometryCollection, LineString, MultiLineString, MultiPoint};
 
 #[test]
 fn failed_geometry_leaves_no_records() {
     let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
     let sq = poly(&[(1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0), (1.0, 1.0)], &[]);
     let bad = poly(&[(1.0, 1.0), (f64::NAN, 1.0), (4.0, 4.0), (1.0, 4.0), (1.0, 1.0)], &[]);
-    let mut out = Spans::default();
+    let mut out = Stretches::new(Rule::Fraction);
     let r = Burner::new(Rule::Fraction).burn_polygons(
         &g,
         [(GeomId(0), &sq), (GeomId(1), &bad)],
+        Origin::Grid,
         &mut out,
     );
     assert!(matches!(r, Err(BurnError::NonFinite { .. })));
-    let mut first = Spans::default();
-    Burner::new(Rule::Fraction).burn_polygons(&g, [(GeomId(0), &sq)], &mut first).expect("burn");
+    let mut first = Stretches::new(Rule::Fraction);
+    Burner::new(Rule::Fraction)
+        .burn_polygons(&g, [(GeomId(0), &sq)], Origin::Grid, &mut first)
+        .expect("burn");
     assert_eq!(out, first);
 
     let line = ls(&[(1.0, 1.0), (4.0, 4.0)]);
@@ -43,7 +46,8 @@ fn short_ring_short_line_and_unsupported() {
     let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
     let mut b = Burner::new(Rule::Fraction);
     let tri = poly(&[(1.0, 1.0), (4.0, 1.0), (1.0, 1.0)], &[]);
-    let r = b.burn_polygons(&g, [(GeomId(0), &tri)], &mut Spans::default());
+    let r =
+        b.burn_polygons(&g, [(GeomId(0), &tri)], Origin::Grid, &mut Stretches::new(Rule::Fraction));
     assert!(matches!(r, Err(BurnError::ShortRing { .. })));
     let one = ls(&[(1.0, 1.0)]);
     assert!(matches!(b.burn(&g, [(GeomId(0), &one)]), Err(BurnError::ShortLine { .. })));
@@ -70,5 +74,36 @@ fn thread_safety_contract() {
     copy_send_sync::<burnscars::Grid>();
     send::<Burner>();
     send::<BurnResult>();
-    send::<Spans>();
+    send::<Stretches>();
+}
+
+/// The declared type decides, so an empty line or point is refused as a line or a point is.
+#[test]
+fn burn_polygons_refuses_empty_lines_and_points() {
+    let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
+    let empty: [Geometry<f64>; 3] = [
+        Geometry::LineString(LineString::new(vec![])),
+        Geometry::MultiLineString(MultiLineString::new(vec![])),
+        Geometry::MultiPoint(MultiPoint::new(vec![])),
+    ];
+    let mut b = Burner::new(Rule::Fraction);
+    for x in &empty {
+        let r = b.burn_polygons(
+            &g,
+            [(GeomId(3), x)],
+            Origin::Grid,
+            &mut Stretches::new(Rule::Fraction),
+        );
+        assert!(matches!(r, Err(BurnError::NotPolygonal { id: GeomId(3) })), "{x:?}: {r:?}");
+    }
+    // POINT EMPTY in WKB: x and y are NaN.
+    let bytes = common::hex("0101000000000000000000F87F000000000000F87F");
+    let point = wkb::reader::read_wkb(&bytes).expect("wkb");
+    let r = b.burn_polygons(
+        &g,
+        [(GeomId(3), &point)],
+        Origin::Grid,
+        &mut Stretches::new(Rule::Fraction),
+    );
+    assert!(matches!(r, Err(BurnError::NotPolygonal { id: GeomId(3) })), "{r:?}");
 }

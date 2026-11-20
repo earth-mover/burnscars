@@ -7,7 +7,7 @@ mod common;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use burnscars::{BurnResult, Burner, GeomId, Rule, Spans};
+use burnscars::{BurnResult, Burner, GeomId, Origin, Rule, Stretches};
 use common::{grid, is_polygonal, ls, poly};
 use geo_types::{Geometry, MultiPoint, Point};
 
@@ -49,20 +49,20 @@ fn second_burn_makes_no_allocation() {
     for rule in [Rule::Fraction, Rule::Touched, Rule::Centre] {
         let mut b = Burner::new(rule);
         let mut out = BurnResult::default();
-        let mut spans = Spans::default();
+        let mut spans = Stretches::new(rule);
         let items =
             || geoms.iter().enumerate().map(|(i, x)| (GeomId(u32::try_from(i).unwrap_or(0)), x));
         let polys = || items().filter(|(_, x)| is_polygonal(x));
         let rest = || items().filter(|(_, x)| !is_polygonal(x));
         let warm_before = ALLOCS.load(Ordering::Relaxed);
-        b.burn_polygons(&g, polys(), &mut spans).expect("warm-up");
+        b.burn_polygons(&g, polys(), Origin::Grid, &mut spans).expect("warm-up");
         b.burn_into(&g, rest(), &mut out).expect("warm-up");
         // The warm-up must allocate, or the counting allocator is not in use.
         assert!(ALLOCS.load(Ordering::Relaxed) > warm_before, "{rule:?}: allocator not counting");
         out.clear();
         spans.clear();
         let before = ALLOCS.load(Ordering::Relaxed);
-        b.burn_polygons(&g, polys(), &mut spans).expect("burn");
+        b.burn_polygons(&g, polys(), Origin::Grid, &mut spans).expect("burn");
         b.burn_into(&g, rest(), &mut out).expect("burn");
         let after = ALLOCS.load(Ordering::Relaxed);
         assert_eq!(after - before, 0, "{rule:?}");

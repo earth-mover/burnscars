@@ -3,12 +3,12 @@
 
 mod common;
 
-use burnscars::{GeomId, Rule, Spans};
+use burnscars::{GeomId, Rule, Stretches};
 use common::{burn_spans, covered_area, densify, grid, poly};
 use geo_types::Polygon;
 
 #[expect(clippy::expect_used, reason = "test helper")]
-fn burn(p: &Polygon<f64>, g: &burnscars::Grid) -> Spans {
+fn burn(p: &Polygon<f64>, g: &burnscars::Grid) -> Stretches {
     burn_spans(Rule::Centre, g, [(GeomId(0), p)]).expect("burn")
 }
 
@@ -75,7 +75,7 @@ fn vertex_on_a_row_centre_does_not_fill_the_row() {
     );
     let r = burn(&p, &g);
     assert!(r.col_end.iter().all(|&e| e <= 2), "{r:?}");
-    assert_eq!(r.len(), 2);
+    assert_eq!(r.stretches(), 2);
 }
 
 #[test]

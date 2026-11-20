@@ -2,12 +2,12 @@
 
 mod common;
 
-use burnscars::{GeomId, Rule, Spans};
+use burnscars::{GeomId, Rule, Stretches};
 use common::{burn_spans, covered_area, densify, grid, poly};
 use geo_types::MultiPolygon;
 
 /// `densify` panics on a cell that two stretches cover.
-fn one_record_per_cell(r: &Spans) -> bool {
+fn one_record_per_cell(r: &Stretches) -> bool {
     densify(r).len() == r.col_start.iter().zip(&r.col_end).map(|(a, b)| (b - a) as usize).sum()
 }
 

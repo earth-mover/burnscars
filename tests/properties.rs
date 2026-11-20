@@ -26,7 +26,7 @@
 
 mod common;
 
-use burnscars::{GeomId, Grid, Rule, Spans};
+use burnscars::{GeomId, Grid, Rule, Stretches};
 use common::{burn_spans, densify, edge_cells};
 use geo_types::{LineString, Polygon, coord};
 use proptest::prelude::*;
@@ -350,11 +350,11 @@ fn clipped_area(r: &[P], e: &Ext) -> f64 {
     shoelace(&c).abs()
 }
 
-fn burn1(r: &[P], g: &G, rule: Rule) -> Spans {
+fn burn1(r: &[P], g: &G, rule: Rule) -> Stretches {
     burn_holed(r, &[], g, rule)
 }
 
-fn burn_holed(r: &[P], holes: &[Vec<P>], g: &G, rule: Rule) -> Spans {
+fn burn_holed(r: &[P], holes: &[Vec<P>], g: &G, rule: Rule) -> Stretches {
     let ls =
         |r: &[P]| -> LineString<f64> { r.iter().map(|&(x, y)| coord! { x: x, y: y }).collect() };
     let p = Polygon::new(ls(r), holes.iter().map(|h| ls(h)).collect());
@@ -363,7 +363,7 @@ fn burn_holed(r: &[P], holes: &[Vec<P>], g: &G, rule: Rule) -> Spans {
 }
 
 /// Dense row-major cover from the spans.
-fn cover(res: &Spans, g: &G) -> Vec<f64> {
+fn cover(res: &Stretches, g: &G) -> Vec<f64> {
     let nc = g.nc();
     let mut m = vec![0.0; nc * g.nr()];
     for ((_, row, col), w) in densify(res) {
@@ -372,7 +372,7 @@ fn cover(res: &Spans, g: &G) -> Vec<f64> {
     m
 }
 
-fn area(res: &Spans, g: &G) -> f64 {
+fn area(res: &Stretches, g: &G) -> f64 {
     let l = *g.grid().lattice();
     let cells: f64 = densify(res).values().map(|&w| f64::from(w)).sum();
     l.x().dx() * l.y().dy() * cells

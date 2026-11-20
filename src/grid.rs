@@ -238,15 +238,17 @@ fn positive(axis: &'static str, step: f64) -> Result<(), GridError> {
 /// [-180, 180).
 ///
 /// ```
-/// use burnscars::{Burner, Col, GeomId, Grid, Lattice, Row, Rule, Span, Spans, XAxis, YAxis, YOrigin};
+/// use burnscars::{
+///     Burner, Col, GeomId, Grid, Lattice, Origin, Row, Rule, Span, Stretches, XAxis, YAxis, YOrigin,
+/// };
 /// use geo_types::Rect;
 ///
 /// let x = XAxis::new(165.0, 10.0)?.with_period(360.0)?;
 /// let y = YAxis::new(5.0, 10.0, YOrigin::SouthUp)?; // y0 = 5 is the south edge
 /// let grid = Grid::new(Lattice::new(x, y), Span::new(Row(0), Row(3))?, Span::new(Col(0), Col(4))?)?;
 /// let zone = Rect::new((-175.0, 15.0), (-165.0, 35.0));
-/// let mut out = Spans::default();
-/// Burner::new(Rule::Centre).burn_polygons(&grid, [(GeomId(0), zone)], &mut out)?;
+/// let mut out = Stretches::new(Rule::Centre);
+/// Burner::new(Rule::Centre).burn_polygons(&grid, [(GeomId(0), zone)], Origin::Grid, &mut out)?;
 /// // The cells at longitude 190, latitude 20 and 30: one fiber per row, in row order.
 /// assert_eq!(out.row, [1, 2]);
 /// assert_eq!((out.col_start, out.col_end), (vec![2, 2], vec![3, 3]));

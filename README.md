@@ -34,11 +34,12 @@ geometry or by grid chunk and run it in parallel.
 
 ## Output
 
-Polygons (`Burner::burn_polygons`) give a `Spans` table: the sparse coverage matrix
+Polygons (`Burner::burn_polygons`) give a `Stretches` table: the sparse coverage matrix
 `W[geometry, cell]`. Each fiber is one geometry in one row, sorted by `(id, row)`, and
 holds stretches of columns: a run (one value, the interior at 1) or a block (one value
 per cell, the boundary fractions). Under `Rule::Touched` and `Rule::Centre` there are no
-values. Geometry ids must strictly increase.
+values. Geometry ids must strictly increase. `Origin::Window` gives indices from the
+window's corner; `Origin::Grid` gives whole-grid indices.
 
 Lines and points (`Burner::burn_into`) give two tables in struct-of-arrays form:
 `lines` (length in cell) and `points`.

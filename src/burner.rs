@@ -2,14 +2,14 @@
 
 use std::ops::RangeInclusive;
 
-use geo_traits::GeometryTrait;
+use geo_traits::{GeometryTrait, GeometryType};
 
 use crate::approx;
 use crate::coverage;
 use crate::error::BurnError;
 use crate::grid::{GeomId, Grid, NorthUp, NorthUpGrid};
 use crate::input::{Envelope, Loaded, for_each_xy};
-use crate::output::{BurnResult, GeomStart, PolyRecs, Spans};
+use crate::output::{BurnResult, GeomStart, PolyRecs, Stretches};
 use crate::scratch::Scratch;
 use crate::{line, point};
 
@@ -27,9 +27,18 @@ pub enum Rule {
 }
 
 impl Rule {
-    fn has_values(self) -> bool {
+    pub(crate) fn has_values(self) -> bool {
         self == Self::Fraction
     }
+}
+
+/// The origin of the row and column indices in [`Stretches`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Whole-grid indices.
+    Grid,
+    /// Indices from the window's first row and column.
+    Window,
 }
 
 /// `Send` and `Sync`; use one per worker, because it owns reused scratch buffers.
@@ -52,16 +61,23 @@ impl Burner {
         self.rule
     }
 
-    /// The capacity of the burner's own buffers now (input copy, walk scratch, cell
-    /// accumulator, polygon records), in bytes.
+    /// The capacity of the burner's own buffers now, in bytes:
+    /// input copy, walk scratch, cell accumulator and the polygon records of `reserve_records`.
     #[must_use]
     pub fn scratch_bytes(&self) -> u64 {
         u64::try_from(self.scratch.bytes() + self.polys.bytes()).unwrap_or(u64::MAX)
     }
 
-    /// Appends the polygons' spans to `out`.
+    /// Reserves room for `n` polygon records (16 B each), so the buffer does not grow during a burn.
+    /// One geometry gives about one record per boundary cell and per interior run, per copy.
+    pub fn reserve_records(&mut self, n: usize) {
+        self.polys.reserve(n);
+    }
+
+    /// Appends the polygons' spans to `out`, with indices from `origin`.
     ///
-    /// Refuses a line or a point when it loads the geometry, before the window skip,
+    /// Refuses `out` of another rule (`values` `Some` against `None`).
+    /// Refuses a geometry of a non-polygonal type, also an empty one, before it loads,
     /// so every window gives the same answer.
     /// Refuses an id that is not above the previous one in this call or above the last
     /// fiber already in `out`. Refuses more than `u32::MAX` values.
@@ -70,20 +86,25 @@ impl Burner {
         &mut self,
         grid: &Grid,
         geoms: I,
-        out: &mut Spans,
+        origin: Origin,
+        out: &mut Stretches,
     ) -> Result<(), BurnError>
     where
         G: GeometryTrait<T = f64>,
         I: IntoIterator<Item = (GeomId, G)>,
     {
-        out.prepare(self.rule.has_values())?;
+        out.check_rule(self.rule)?;
+        let origin = match origin {
+            Origin::Grid => (0, 0),
+            Origin::Window => (grid.rows().start().0, grid.cols().start().0),
+        };
         let mut previous = out.id.last().copied().map(GeomId);
         geoms.into_iter().try_for_each(|(id, g)| {
             if let Some(previous) = previous.filter(|&p| id <= p) {
                 return Err(BurnError::IdOrder { id, previous });
             }
             previous = Some(id);
-            self.burn_polygon(grid, id, &g, out)
+            self.burn_polygon(grid, id, &g, origin, out)
         })
     }
 
@@ -124,9 +145,14 @@ impl Burner {
         grid: &Grid,
         id: GeomId,
         g: &G,
-        out: &mut Spans,
+        origin: (u32, u32),
+        out: &mut Stretches,
     ) -> Result<(), BurnError> {
         self.polys.clear();
+        // The declared type, so an empty line or point is refused too. `load` refuses a collection.
+        if is_polygonal(g) == Some(false) {
+            return Err(BurnError::NotPolygonal { id });
+        }
         match self.scratch.input.load(g, id)? {
             Loaded::Empty => return Ok(()),
             Loaded::Lines | Loaded::Points => return Err(BurnError::NotPolygonal { id }),
@@ -142,7 +168,7 @@ impl Burner {
             }
             self.polys.map_rows(n.rows);
         }
-        self.polys.encode(id, self.rule.has_values(), out)
+        self.polys.encode(id, origin, out)
     }
 
     /// The ported polygon algorithms, on a north-up grid, into the record buffer.
@@ -225,6 +251,22 @@ impl Burner {
     }
 }
 
+/// The declared type is polygonal: `Some(true)` or `Some(false)`; `None` for a collection.
+fn is_polygonal<G: GeometryTrait<T = f64>>(g: &G) -> Option<bool> {
+    match g.as_type() {
+        GeometryType::Polygon(_)
+        | GeometryType::MultiPolygon(_)
+        | GeometryType::Rect(_)
+        | GeometryType::Triangle(_) => Some(true),
+        GeometryType::GeometryCollection(_) => None,
+        GeometryType::Point(_)
+        | GeometryType::LineString(_)
+        | GeometryType::MultiPoint(_)
+        | GeometryType::MultiLineString(_)
+        | GeometryType::Line(_) => Some(false),
+    }
+}
+
 /// The period and the copies `k` (shifts by `k` periods) that meet the window.
 /// No period: one copy, `k = 0`.
 fn copies(
@@ -281,8 +323,8 @@ mod tests {
 
     use super::*;
     use crate::coverage::fraction::to_f32;
-    use crate::grid::{Col, Row, Span};
-    use crate::output::Rec;
+    use crate::grid::{Col, Lattice, Row, Span, XAxis, YAxis, YOrigin};
+    use crate::output::{Rec, StretchCounts};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -297,12 +339,11 @@ mod tests {
     }
 
     /// Feeds one geometry's records, in the given order, to the merge and the encoder (test only).
-    fn merge_one(rule: Rule, recs: &[Rec]) -> Result<Spans, BurnError> {
+    fn merge_one(rule: Rule, recs: &[Rec]) -> Result<Stretches, BurnError> {
         let mut p = PolyRecs::default();
         recs.iter().for_each(|&r| p.push(r));
-        let mut out = Spans::default();
-        out.prepare(rule.has_values())?;
-        p.encode(GeomId(0), rule.has_values(), &mut out)?;
+        let mut out = Stretches::new(rule);
+        p.encode(GeomId(0), (0, 0), &mut out)?;
         Ok(out)
     }
 
@@ -370,10 +411,11 @@ mod tests {
     #[test]
     fn an_empty_burn_has_one_pointer() -> TestResult {
         let grid = Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10)?;
-        let mut out = Spans::default();
+        let mut out = Stretches::new(Rule::Fraction);
         Burner::new(Rule::Fraction).burn_polygons(
             &grid,
             [(GeomId(0), square(20.0, 20.0))],
+            Origin::Grid,
             &mut out,
         )?;
         assert_eq!(out.fiber_ptr, [0]);
@@ -387,16 +429,22 @@ mod tests {
         let mut b = Burner::new(Rule::Fraction);
         for x in [1.0, 50.0] {
             let line: Geometry<f64> = LineString::from(vec![(x, 1.0), (x + 2.0, 3.0)]).into();
-            let r = b.burn_polygons(&grid, [(GeomId(0), line)], &mut Spans::default());
+            let r = b.burn_polygons(
+                &grid,
+                [(GeomId(0), line)],
+                Origin::Grid,
+                &mut Stretches::new(Rule::Fraction),
+            );
             assert!(matches!(r, Err(BurnError::NotPolygonal { id: GeomId(0) })), "{r:?}");
         }
         for second in [1, 2] {
-            let mut out = Spans::default();
+            let mut out = Stretches::new(Rule::Fraction);
             let items = [(GeomId(2), square(1.0, 1.0)), (GeomId(second), square(5.0, 5.0))];
-            let r = b.burn_polygons(&grid, items, &mut out);
+            let r = b.burn_polygons(&grid, items, Origin::Grid, &mut out);
             assert!(matches!(r, Err(BurnError::IdOrder { .. })), "{r:?}");
             assert_eq!(out.id, [2, 2]);
-            let again = b.burn_polygons(&grid, [(GeomId(2), square(5.0, 5.0))], &mut out);
+            let again =
+                b.burn_polygons(&grid, [(GeomId(2), square(5.0, 5.0))], Origin::Grid, &mut out);
             assert!(matches!(again, Err(BurnError::IdOrder { .. })), "{again:?}");
         }
         Ok(())
@@ -416,8 +464,98 @@ mod tests {
         let grid = Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10)?;
         let mut b = Burner::new(Rule::Fraction);
         assert_eq!(b.scratch_bytes(), 0);
-        b.burn_polygons(&grid, [(GeomId(0), square(1.5, 1.5))], &mut Spans::default())?;
+        b.burn_polygons(
+            &grid,
+            [(GeomId(0), square(1.5, 1.5))],
+            Origin::Grid,
+            &mut Stretches::new(Rule::Fraction),
+        )?;
         assert!(b.scratch_bytes() > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn an_edge_at_a_run_start_goes_into_the_run() -> TestResult {
+        let spans = merge_one(Rule::Fraction, &[edge(0, 4, 0.3), run(0, 4..9)])?;
+        assert_eq!((spans.col_start, spans.col_end), (vec![4], vec![9]));
+        assert_eq!(spans.values.ok_or("no values")?.weight, [1.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_sum_below_the_full_threshold_stays_a_block_and_a_sum_above_one_clamps() -> TestResult {
+        let below = [run(0, 2..7), edge(0, 7, 0.5), edge(0, 7, 0.499_998_5)];
+        let spans = merge_one(Rule::Fraction, &below)?;
+        assert_eq!((spans.col_start, spans.col_end), (vec![2, 7], vec![7, 8]));
+        let sum = to_f32(f64::from(0.5_f32) + f64::from(0.499_998_5_f32));
+        assert_eq!(spans.values.ok_or("no values")?.weight, [1.0, sum]);
+        let over = merge_one(Rule::Fraction, &[edge(0, 7, 0.6), edge(0, 7, 0.6), run(0, 2..7)])?;
+        assert_eq!((over.col_start, over.col_end), (vec![2], vec![8]));
+        assert_eq!(over.values.ok_or("no values")?.weight, [1.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn truncate_to_a_mark_restores_the_table() -> TestResult {
+        let mut out = Stretches::new(Rule::Fraction);
+        let mut p = PolyRecs::default();
+        let mut encode = |id: u32, recs: &[Rec], out: &mut Stretches| {
+            p.clear();
+            recs.iter().for_each(|&r| p.push(r));
+            p.encode(GeomId(id), (0, 0), out)
+        };
+        encode(0, &[run(0, 1..4), edge(1, 2, 0.5), edge(1, 3, 0.25)], &mut out)?;
+        let first = out.clone();
+        let mark = out.mark();
+        encode(1, &[edge(0, 0, 0.5), run(0, 1..3), run(2, 0..9)], &mut out)?;
+        assert_ne!(out, first);
+        out.truncate(mark);
+        assert_eq!(out, first);
+        Ok(())
+    }
+
+    #[test]
+    fn a_rule_must_match_the_table() -> TestResult {
+        let grid = Grid::from_extent(0.0, 0.0, 10.0, 10.0, 10, 10)?;
+        let n = StretchCounts { fibers: 4, stretches: 8, values: 16 };
+        let mut touched = Stretches::with_capacity(Rule::Touched, n);
+        let sq = [(GeomId(0), square(1.5, 1.5))];
+        Burner::new(Rule::Touched).burn_polygons(&grid, sq.clone(), Origin::Grid, &mut touched)?;
+        assert!(!touched.is_empty());
+        assert_eq!(touched.values, None);
+
+        for mut out in [Stretches::new(Rule::Fraction), touched] {
+            let before = out.clone();
+            let rule = if out.values.is_some() { Rule::Touched } else { Rule::Fraction };
+            let r = Burner::new(rule).burn_polygons(&grid, sq.clone(), Origin::Grid, &mut out);
+            assert!(matches!(r, Err(BurnError::RuleMismatch)), "{r:?}");
+            assert_eq!(out, before);
+        }
+        Ok(())
+    }
+
+    /// One rect on a window at rows 3.., cols 5..: `Window` is `Grid` less `(3, 5)`.
+    #[test]
+    fn a_window_origin_subtracts_the_window_corner() -> TestResult {
+        for origin in [YOrigin::NorthUp, YOrigin::SouthUp] {
+            let y0 = if origin == YOrigin::NorthUp { 10.0 } else { 0.0 };
+            let l = Lattice::new(XAxis::new(0.0, 1.0)?, YAxis::new(y0, 1.0, origin)?);
+            let full = Grid::new(l, Span::new(Row(0), Row(10))?, Span::new(Col(0), Col(10))?)?;
+            let w = full.window(Span::new(Row(3), Row(10))?, Span::new(Col(5), Col(10))?)?;
+            let rect = [(GeomId(0), Geometry::from(Rect::new((4.5, 1.5), (8.5, 5.5))))];
+            let mut b = Burner::new(Rule::Fraction);
+            let mut grid = Stretches::new(Rule::Fraction);
+            b.burn_polygons(&w, rect.clone(), Origin::Grid, &mut grid)?;
+            let mut window = Stretches::new(Rule::Fraction);
+            b.burn_polygons(&w, rect, Origin::Window, &mut window)?;
+            assert!(!grid.is_empty());
+            assert!(grid.row.iter().all(|&r| r >= 3) && grid.col_start.iter().all(|&c| c >= 5));
+            let shift = |v: &[u32], d: u32| v.iter().map(|x| x - d).collect::<Vec<_>>();
+            assert_eq!(window.row, shift(&grid.row, 3), "{origin:?}");
+            assert_eq!(window.col_start, shift(&grid.col_start, 5), "{origin:?}");
+            assert_eq!(window.col_end, shift(&grid.col_end, 5), "{origin:?}");
+            assert_eq!((&window.fiber_ptr, &window.values), (&grid.fiber_ptr, &grid.values));
+        }
         Ok(())
     }
 }

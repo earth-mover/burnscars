@@ -3,7 +3,7 @@
 
 mod common;
 
-use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Rule, Spans};
+use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Origin, Rule, Stretches};
 use common::{covered_area, edge_cells, hex, known_diffs, read_csv};
 
 const GEOMS: &str = include_str!("../fixtures/geometries.csv");
@@ -46,8 +46,8 @@ fn parity_with_controlledburn_fixtures() {
         let bytes = hex(&g[col(gh, "wkb_hex")]);
         let geom = wkb::reader::read_wkb(&bytes).expect("wkb");
         let mut b = Burner::new(Rule::Fraction);
-        let mut spans = Spans::default();
-        let r = match b.burn_polygons(&grid, [(GeomId(0), &geom)], &mut spans) {
+        let mut spans = Stretches::new(Rule::Fraction);
+        let r = match b.burn_polygons(&grid, [(GeomId(0), &geom)], Origin::Grid, &mut spans) {
             Err(BurnError::NotPolygonal { .. }) => {
                 b.burn(&grid, [(GeomId(0), &geom)]).expect("burn")
             }

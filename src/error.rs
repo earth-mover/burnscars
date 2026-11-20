@@ -61,7 +61,7 @@ pub enum BurnError {
     IdOrder { id: GeomId, previous: GeomId },
     #[error("geometry {id}: more than u32::MAX span values")]
     TooManyValues { id: GeomId },
-    #[error("the span table holds fibers of a rule with another value form; clear it first")]
+    #[error("the stretch table holds the value form of another rule")]
     RuleMismatch,
     #[error("geometry {id}: internal error: {detail}")]
     Internal { id: GeomId, detail: &'static str },

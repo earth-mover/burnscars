@@ -5,7 +5,7 @@
 mod common;
 
 use burnscars::{
-    BurnError, Col, GeomId, Grid, Lattice, Pos, Row, Rule, Span, Spans, XAxis, YAxis, YOrigin,
+    BurnError, Col, GeomId, Grid, Lattice, Pos, Row, Rule, Span, Stretches, XAxis, YAxis, YOrigin,
 };
 use common::{Expanded, burn_mixed, burn_spans, ls, poly};
 use geo_types::{Geometry, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Rect};
@@ -26,12 +26,12 @@ fn burn(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Expanded {
 }
 
 #[expect(clippy::cast_possible_truncation, reason = "test indices")]
-fn spans(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Spans {
+fn spans(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Stretches {
     burn_spans(rule, g, geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x))).expect("burn")
 }
 
 /// `(row, cols)` of every stretch, in fiber order.
-fn runs(s: &Spans) -> Vec<(u32, std::ops::Range<u32>)> {
+fn runs(s: &Stretches) -> Vec<(u32, std::ops::Range<u32>)> {
     (0..s.id.len())
         .flat_map(|f| {
             (s.fiber_ptr[f]..s.fiber_ptr[f + 1])

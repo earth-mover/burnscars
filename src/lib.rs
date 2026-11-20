@@ -7,7 +7,7 @@
 //!
 //! # Output as a sparse matrix
 //!
-//! The polygon output is the sparse coverage matrix `W[geometry, cell]`, as a [`Spans`]
+//! The polygon output is the sparse coverage matrix `W[geometry, cell]`, as a [`Stretches`]
 //! table. The value is the fraction of the cell that the geometry covers, and it is 1 for
 //! interior cells. Zonal statistics are `(W v) / (W 1)` for a raster `v`. This is what
 //! exactextract computes.
@@ -19,6 +19,8 @@
 //!   (the boundary). The runs keep the storage at O(perimeter), not O(area).
 //! - Under [`Rule::Touched`] and [`Rule::Centre`] the cells have no weight, and every
 //!   stretch is a run.
+//! - [`Origin::Grid`] gives whole-grid row and column indices;
+//!   [`Origin::Window`] gives them from the window's first row and column.
 //!
 //! Lines and points go to [`BurnResult`] through [`Burner::burn_into`].
 //!
@@ -27,14 +29,14 @@
 //! # Example
 //!
 //! ```
-//! use burnscars::{Burner, GeomId, Grid, Rule, Spans};
+//! use burnscars::{Burner, GeomId, Grid, Origin, Rule, Stretches};
 //! use geo_types::polygon;
 //!
 //! // A 4 x 4 grid over [0, 4] x [0, 4], and a square that covers 2 x 2 cells.
 //! let grid = Grid::from_extent(0.0, 0.0, 4.0, 4.0, 4, 4)?;
 //! let square = polygon![(x: 1.0, y: 1.0), (x: 3.0, y: 1.0), (x: 3.0, y: 3.0), (x: 1.0, y: 3.0)];
-//! let mut out = Spans::default();
-//! Burner::new(Rule::Fraction).burn_polygons(&grid, [(GeomId(0), &square)], &mut out)?;
+//! let mut out = Stretches::new(Rule::Fraction);
+//! Burner::new(Rule::Fraction).burn_polygons(&grid, [(GeomId(0), &square)], Origin::Grid, &mut out)?;
 //! // Two fibers (rows 1 and 2), each one run over columns 1..3 at weight 1.
 //! assert_eq!(out.row, [1, 2]);
 //! assert_eq!((out.col_start.as_slice(), out.col_end.as_slice()), (&[1, 1][..], &[3, 3][..]));
@@ -55,10 +57,10 @@ mod point;
 mod scratch;
 mod sort;
 
-pub use burner::{Burner, Rule, bbox};
+pub use burner::{Burner, Origin, Rule, bbox};
 pub use error::{At, BurnError, GeomKind};
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span, XAxis, YAxis, YOrigin};
 pub use output::{
-    BurnResult, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor, RowMajorError, SpanValues,
-    Spans,
+    BurnResult, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor, RowMajorError,
+    StretchValues, Stretches,
 };

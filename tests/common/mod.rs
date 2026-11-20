@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Rule, Spans};
+use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Origin, Rule, Stretches};
 use geo_traits::GeometryTrait;
 use geo_types::{Geometry, LineString, Polygon, coord};
 
@@ -23,21 +23,21 @@ pub(crate) fn poly(ext: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon<f64> 
     Polygon::new(ls(ext), holes.iter().map(|h| ls(h)).collect())
 }
 
-/// Burns polygons into a new `Spans`.
-pub(crate) fn burn_spans<G, I>(rule: Rule, g: &Grid, items: I) -> Result<Spans, BurnError>
+/// Burns polygons into a new `Stretches`.
+pub(crate) fn burn_spans<G, I>(rule: Rule, g: &Grid, items: I) -> Result<Stretches, BurnError>
 where
     G: GeometryTrait<T = f64>,
     I: IntoIterator<Item = (GeomId, G)>,
 {
-    let mut out = Spans::default();
-    Burner::new(rule).burn_polygons(g, items, &mut out)?;
+    let mut out = Stretches::new(rule);
+    Burner::new(rule).burn_polygons(g, items, Origin::Grid, &mut out)?;
     Ok(out)
 }
 
 /// `(id, row, col) -> weight`, 1.0 with no values (test only).
 /// Panics on a cell that two stretches cover.
 #[expect(clippy::panic, reason = "test helper: a cell twice is a test failure")]
-pub(crate) fn densify(s: &Spans) -> BTreeMap<(u32, u32, u32), f32> {
+pub(crate) fn densify(s: &Stretches) -> BTreeMap<(u32, u32, u32), f32> {
     let mut m = BTreeMap::new();
     for (f, (&id, &row)) in s.id.iter().zip(&s.row).enumerate() {
         for st in s.fiber_ptr[f]..s.fiber_ptr[f + 1] {
@@ -57,14 +57,14 @@ pub(crate) fn densify(s: &Spans) -> BTreeMap<(u32, u32, u32), f32> {
 }
 
 /// Sum of the cell weights times the cell area.
-pub(crate) fn covered_area(s: &Spans, g: &Grid) -> f64 {
+pub(crate) fn covered_area(s: &Stretches, g: &Grid) -> f64 {
     let l = g.lattice();
     let cells: f64 = densify(s).values().map(|&w| f64::from(w)).sum();
     l.x().dx() * l.y().dy() * cells
 }
 
 /// The cells with a weight below 1: the boundary cells under `Rule::Fraction`.
-pub(crate) fn edge_cells(s: &Spans) -> Vec<((u32, u32, u32), f32)> {
+pub(crate) fn edge_cells(s: &Stretches) -> Vec<((u32, u32, u32), f32)> {
     densify(s).into_iter().filter(|&(_, w)| w < 1.0).collect()
 }
 
@@ -72,7 +72,7 @@ pub(crate) fn edge_cells(s: &Spans) -> Vec<((u32, u32, u32), f32)> {
 pub(crate) type Expanded = BTreeMap<(u8, u32, u32, u32), Vec<u32>>;
 
 /// Expanded form of the polygon spans, as table 0.
-pub(crate) fn expanded_spans(s: &Spans) -> Expanded {
+pub(crate) fn expanded_spans(s: &Stretches) -> Expanded {
     densify(s).into_iter().map(|((id, r, c), w)| ((0, id, r, c), vec![w.to_bits()])).collect()
 }
 
@@ -102,7 +102,7 @@ pub(crate) fn is_polygonal(g: &Geometry<f64>) -> bool {
     )
 }
 
-/// Burns a mixed list, id = index: polygons into `Spans`, lines and points into `BurnResult`.
+/// Burns a mixed list, id = index: polygons into `Stretches`, lines and points into `BurnResult`.
 /// The expanded forms of both, in one map.
 #[expect(clippy::cast_possible_truncation, reason = "test indices")]
 pub(crate) fn burn_mixed(

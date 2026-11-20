@@ -3,12 +3,12 @@
 
 mod common;
 
-use burnscars::{GeomId, Rule, Spans};
+use burnscars::{GeomId, Rule, Stretches};
 use common::{burn_spans, covered_area, edge_cells, grid, poly};
 use geo_types::{MultiPolygon, Polygon};
 
 #[expect(clippy::expect_used, reason = "test helper")]
-fn burn(p: &Polygon<f64>, g: &burnscars::Grid) -> Spans {
+fn burn(p: &Polygon<f64>, g: &burnscars::Grid) -> Stretches {
     burn_spans(Rule::Fraction, g, [(GeomId(0), p)]).expect("burn")
 }
 

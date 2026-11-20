@@ -2,7 +2,7 @@
 
 #![expect(clippy::expect_used, reason = "bench code; a failed burn must stop the run")]
 
-use burnscars::{Burner, GeomId, Grid, Rule, Spans};
+use burnscars::{Burner, GeomId, Grid, Origin, Rule, Stretches};
 use criterion::{Criterion, criterion_group, criterion_main};
 use geo_types::{LineString, Polygon, coord};
 use std::hint::black_box;
@@ -53,10 +53,12 @@ fn bench(c: &mut Criterion) {
         for rule in RULES {
             c.bench_function(&format!("coastline_200k/{side}/{rule:?}"), |b| {
                 let mut burner = Burner::new(rule);
-                let mut out = Spans::default();
+                let mut out = Stretches::new(rule);
                 b.iter(|| {
                     out.clear();
-                    burner.burn_polygons(&g, [(GeomId(0), &coast)], &mut out).expect("burn");
+                    burner
+                        .burn_polygons(&g, [(GeomId(0), &coast)], Origin::Grid, &mut out)
+                        .expect("burn");
                     black_box(&out);
                 });
             });
@@ -67,20 +69,22 @@ fn bench(c: &mut Criterion) {
         for rule in RULES {
             c.bench_function(&format!("circle_1e6/{side}/{rule:?}"), |b| {
                 let mut burner = Burner::new(rule);
-                let mut out = Spans::default();
+                let mut out = Stretches::new(rule);
                 b.iter(|| {
                     out.clear();
-                    burner.burn_polygons(&g, [(GeomId(0), &big)], &mut out).expect("burn");
+                    burner
+                        .burn_polygons(&g, [(GeomId(0), &big)], Origin::Grid, &mut out)
+                        .expect("burn");
                     black_box(&out);
                 });
             });
             c.bench_function(&format!("small_1e4/{side}/{rule:?}"), |b| {
                 let mut burner = Burner::new(rule);
-                let mut out = Spans::default();
+                let mut out = Stretches::new(rule);
                 b.iter(|| {
                     out.clear();
                     let items = small.iter().enumerate().map(|(i, p)| (GeomId(i as u32), p));
-                    burner.burn_polygons(&g, items, &mut out).expect("burn");
+                    burner.burn_polygons(&g, items, Origin::Grid, &mut out).expect("burn");
                     black_box(&out);
                 });
             });
