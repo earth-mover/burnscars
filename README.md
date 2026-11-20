@@ -22,6 +22,10 @@ geometry or by grid chunk and run it in parallel.
 - [rusterize](https://github.com/ttrotto/rusterize): prior art for scanline
   rasterization in Rust.
 - GDAL rasterize: the cell-centre oracle for approx mode (through rasterio).
+- [Finch.jl](https://github.com/finch-tensor/Finch.jl) (Willow Ahrens et al.): the sparse
+  layout of `Stretches` and its terms (fiber, run, block, pattern), after its
+  `SparseRunListLevel` and `SparseBlockListLevel` ("Finch: Sparse and Structured Tensor
+  Programming with Control Flow", arXiv:2404.16730).
 
 ## Upstream and rules
 
@@ -44,7 +48,7 @@ window's corner; `Origin::Grid` gives whole-grid indices.
 Lines and points (`Burner::burn_into`) give two tables in struct-of-arrays form:
 `lines` (length in cell) and `points`.
 
-Indices are global, 0-based lattice indices; `col_end` is exclusive. Both lattice steps are > 0.
+Under `Origin::Grid`, indices are global, 0-based lattice indices; `col_end` is exclusive. Both lattice steps are > 0.
 Columns run east. `YOrigin::NorthUp` puts row 0 at the north edge, and
 `YOrigin::SouthUp` puts it at the south edge. `Lattice::from_geotransform` takes a GDAL
 geotransform (`dy < 0` is north-up). See the crate docs for the relation to CSR and CSC

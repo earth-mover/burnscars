@@ -13,11 +13,14 @@ use crate::error::BurnError;
 use crate::grid::{Col, Flip, GeomId, Row, Span};
 
 /// Per fiber (one geometry, one row), the burnt cells sorted by column, as stretches of cells.
-/// A stretch with one value is a run; a stretch with one value per cell is a block.
-/// A one-cell stretch is both.
+/// A stretch with one value is a run.
+/// A stretch of two or more cells with one value per cell is a block.
 ///
 /// It is the sparse coverage matrix `W[geometry, cell]` in a CSR form whose row is the fiber.
 /// Zonal statistics are `(W v) / (W 1)` for a raster `v`.
+///
+/// The fiber, run and block terms and the layout follow Finch.jl's `SparseRunListLevel` and
+/// `SparseBlockListLevel` (Ahrens et al., arXiv:2404.16730), with both kinds in one list per fiber.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stretches {
     /// Fiber `f` is geometry `id[f]` in row `row[f]`. Fibers are strictly sorted by `(id, row)`.
@@ -34,6 +37,7 @@ pub struct Stretches {
 
 /// The weights of the stretches. Stretch `s` holds `weight[value_ptr[s]..value_ptr[s + 1]]`:
 /// one value (a run) or one value per cell (a block).
+/// A table with no weights is a pattern, as in Finch.jl's `Pattern()`: every stored cell counts as 1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StretchValues {
     /// One entry per stretch, plus one. `[0]` when empty.
