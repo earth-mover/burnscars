@@ -558,4 +558,27 @@ mod tests {
         }
         Ok(())
     }
+
+    /// One copy on a south-up grid: rows strictly descend, so the encoder walks them in reverse
+    /// and does not sort.
+    #[test]
+    fn descending_rows_are_walked_in_reverse_with_no_sort() -> TestResult {
+        let recs = [run(3, 0..2), edge(3, 4, 0.5), edge(2, 1, 0.25), run(2, 2..5), run(1, 7..9)];
+        let mut p = PolyRecs::default();
+        recs.iter().for_each(|&r| p.push(r));
+        let mut out = Stretches::new(Rule::Fraction);
+        p.encode(GeomId(0), (0, 0), &mut out)?;
+        assert_eq!(p.recs(), recs);
+        assert_eq!(out.row, [1, 2, 3]);
+        assert_eq!((out.col_start, out.col_end), (vec![7, 1, 2, 0, 4], vec![9, 2, 5, 2, 5]));
+        assert_eq!(out.values.ok_or("no values")?.weight, [1.0, 0.25, 1.0, 1.0, 0.5]);
+        Ok(())
+    }
+
+    #[test]
+    fn reserve_records_reserves() {
+        let mut b = Burner::new(Rule::Fraction);
+        b.reserve_records(1000);
+        assert!(b.scratch_bytes() >= 1000 * size_of::<Rec>() as u64);
+    }
 }

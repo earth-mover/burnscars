@@ -75,7 +75,7 @@ fn vertex_on_a_row_centre_does_not_fill_the_row() {
     );
     let r = burn(&p, &g);
     assert!(r.col_end.iter().all(|&e| e <= 2), "{r:?}");
-    assert_eq!(r.stretches(), 2);
+    assert_eq!(r.len(), 2);
 }
 
 #[test]

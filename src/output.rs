@@ -59,7 +59,7 @@ impl Default for StretchValues {
 
 /// Column lengths at the start of one geometry, to roll back a failed encode.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SpansMark {
+pub(crate) struct StretchesMark {
     fibers: usize,
     stretches: usize,
     values: usize,
@@ -94,12 +94,12 @@ impl Stretches {
 
     /// Empties every column and keeps the capacity and the rule.
     pub fn clear(&mut self) {
-        self.truncate(SpansMark { fibers: 0, stretches: 0, values: 0 });
+        self.truncate(StretchesMark { fibers: 0, stretches: 0, values: 0 });
     }
 
     /// The number of stretches, not of fibers.
     #[must_use]
-    pub fn stretches(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.col_start.len()
     }
 
@@ -108,15 +108,15 @@ impl Stretches {
         self.col_start.is_empty()
     }
 
-    pub(crate) fn mark(&self) -> SpansMark {
-        SpansMark {
+    pub(crate) fn mark(&self) -> StretchesMark {
+        StretchesMark {
             fibers: self.id.len(),
             stretches: self.col_start.len(),
             values: self.values.as_ref().map_or(0, |v| v.weight.len()),
         }
     }
 
-    pub(crate) fn truncate(&mut self, m: SpansMark) {
+    pub(crate) fn truncate(&mut self, m: StretchesMark) {
         self.id.truncate(m.fibers);
         self.row.truncate(m.fibers);
         self.fiber_ptr.truncate(m.fibers + 1);
@@ -210,6 +210,12 @@ impl PolyRecs {
         self.recs.capacity() * size_of::<Rec>()
     }
 
+    /// The records, in their order after the last encode (test only).
+    #[cfg(test)]
+    pub(crate) fn recs(&self) -> &[Rec] {
+        &self.recs
+    }
+
     pub(crate) fn reserve(&mut self, n: usize) {
         self.recs.reserve(n);
     }
@@ -245,6 +251,8 @@ impl PolyRecs {
         } else {
             // Two or more copies. The weight bits make the order total, so the sums do not
             // depend on the burn order of the copies.
+            // With 3 or more copies, a cell's edges add in ascending weight order; this can differ
+            // by an ulp from the burn order.
             self.recs.sort_unstable_by_key(|r| (r.row, r.start, r.is_edge(), r.weight.to_bits()));
             self.recs.chunk_by(same_row).try_for_each(&mut fiber)
         };
