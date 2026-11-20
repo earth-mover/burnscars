@@ -59,7 +59,7 @@ pub enum BurnError {
     NotPolygonal { id: GeomId },
     #[error("geometry {id}: ids must strictly increase; the previous id is {previous}")]
     IdOrder { id: GeomId, previous: GeomId },
-    #[error("geometry {id}: more than u32::MAX span values")]
+    #[error("geometry {id}: more than i32::MAX stretch values")]
     TooManyValues { id: GeomId },
     #[error("the stretch table holds the value form of another rule")]
     RuleMismatch,

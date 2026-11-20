@@ -37,7 +37,8 @@ pub struct Stretches {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StretchValues {
     /// One entry per stretch, plus one. `[0]` when empty.
-    pub value_ptr: Vec<u32>,
+    /// `i32` is the offset type of an Arrow `List`, so an Arrow export moves the column with no copy.
+    pub value_ptr: Vec<i32>,
     pub weight: Vec<f32>,
 }
 
@@ -148,7 +149,8 @@ impl Stretches {
                 let cols = self.col_start[s]..self.col_end[s];
                 let w = |i: usize| {
                     self.values.as_ref().map_or(1.0, |v| {
-                        let vs = &v.weight[v.value_ptr[s] as usize..v.value_ptr[s + 1] as usize];
+                        let at = |k: usize| usize::try_from(v.value_ptr[k]).expect("offset >= 0");
+                        let vs = &v.weight[at(s)..at(s + 1)];
                         if vs.len() == 1 { vs[0] } else { vs[i] }
                     })
                 };
@@ -351,7 +353,7 @@ impl<'o> Fiber<'o> {
         self.out.col_start.push(a);
         self.out.col_end.push(b);
         if let Some(v) = &mut self.out.values {
-            let n = u32::try_from(v.weight.len())
+            let n = i32::try_from(v.weight.len())
                 .map_err(|_| BurnError::TooManyValues { id: self.id })?;
             v.value_ptr.push(n);
         }

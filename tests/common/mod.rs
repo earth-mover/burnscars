@@ -44,7 +44,7 @@ pub(crate) fn densify(s: &Stretches) -> BTreeMap<(u32, u32, u32), f32> {
             let ws = s
                 .values
                 .as_ref()
-                .map(|v| &v.weight[v.value_ptr[st] as usize..v.value_ptr[st + 1] as usize]);
+                .map(|v| &v.weight[offset(v.value_ptr[st])..offset(v.value_ptr[st + 1])]);
             for (i, c) in (s.col_start[st]..s.col_end[st]).enumerate() {
                 let w = ws.map_or(1.0, |ws| if ws.len() == 1 { ws[0] } else { ws[i] });
                 if m.insert((id, row, c), w).is_some() {
@@ -54,6 +54,12 @@ pub(crate) fn densify(s: &Stretches) -> BTreeMap<(u32, u32, u32), f32> {
         }
     }
     m
+}
+
+/// A value offset as an index.
+#[expect(clippy::expect_used, reason = "test helper: a negative offset is a test failure")]
+pub(crate) fn offset(o: i32) -> usize {
+    usize::try_from(o).expect("value offset >= 0")
 }
 
 /// Sum of the cell weights times the cell area.

@@ -80,7 +80,7 @@ impl Burner {
     /// Refuses a geometry of a non-polygonal type, also an empty one, before it loads,
     /// so every window gives the same answer.
     /// Refuses an id that is not above the previous one in this call or above the last
-    /// fiber already in `out`. Refuses more than `u32::MAX` values.
+    /// fiber already in `out`. Refuses more than `i32::MAX` values.
     /// Stops at the first error; `out` is then as it was before the failing geometry.
     pub fn burn_polygons<G, I>(
         &mut self,

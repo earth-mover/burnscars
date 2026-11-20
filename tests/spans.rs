@@ -17,7 +17,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use burnscars::{Col, GeomId, Grid, Lattice, Row, Rule, Span, Stretches, XAxis, YAxis, YOrigin};
-use common::{burn_spans, densify};
+use common::{burn_spans, densify, offset};
 use geo_traits::GeometryTrait;
 use geo_types::{LineString, MultiPolygon, Polygon};
 use proptest::prelude::*;
@@ -153,13 +153,13 @@ fn check_layout(s: &Stretches) -> Result<(), TestCaseError> {
     prop_assert!((0..ns).all(|k| s.col_start[k] < s.col_end[k]), "an empty stretch");
     // A run has weight 1 (or no values); a block holds one weight below 1 per cell.
     let weights = |k: usize| -> Option<&[f32]> {
-        s.values.as_ref().map(|v| &v.weight[v.value_ptr[k] as usize..v.value_ptr[k + 1] as usize])
+        s.values.as_ref().map(|v| &v.weight[offset(v.value_ptr[k])..offset(v.value_ptr[k + 1])])
     };
     let is_run = |k: usize| weights(k).is_none_or(|w| w == [1.0]);
     if let Some(v) = &s.values {
         prop_assert_eq!(v.value_ptr.len(), ns + 1);
         prop_assert_eq!(v.value_ptr[0], 0);
-        prop_assert_eq!(v.value_ptr[ns] as usize, v.weight.len());
+        prop_assert_eq!(offset(v.value_ptr[ns]), v.weight.len());
         prop_assert!(v.value_ptr.windows(2).all(|w| w[0] <= w[1]), "value_ptr not monotonic");
         for k in 0..ns {
             let n = weights(k).map_or(0, <[f32]>::len);
