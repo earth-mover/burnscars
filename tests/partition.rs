@@ -4,9 +4,9 @@
 mod common;
 
 use burnscars::{
-    BurnResult, Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span, XAxis, YAxis, YOrigin,
+    BurnResult, Burner, Col, GeomId, Grid, Lattice, Row, Rule, Span, Spans, XAxis, YAxis, YOrigin,
 };
-use common::{expanded, ls};
+use common::{Expanded, burn_mixed, expanded, expanded_spans, is_polygonal, ls};
 use geo_types::{Geometry, LineString, MultiPoint, Point, Polygon};
 use proptest::prelude::*;
 
@@ -122,10 +122,9 @@ fn chunks(n: u32, size: u32) -> Vec<(u32, u32)> {
     (0..n).step_by(size as usize).map(|s| (s, (s + size).min(n))).collect()
 }
 
-#[expect(clippy::cast_possible_truncation, clippy::expect_used, reason = "test helper")]
-fn burn_all(mode: Mode, g: &Grid, geoms: &[Geometry<f64>]) -> BurnResult {
-    let items = geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x));
-    Burner::new(mode).burn(g, items).expect("burn")
+#[expect(clippy::expect_used, reason = "test helper")]
+fn burn_all(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Expanded {
+    burn_mixed(rule, g, geoms).expect("burn")
 }
 
 /// One drawn case: lattice step, grid size, polygons, lines and points.
@@ -176,24 +175,31 @@ proptest! {
         geoms.extend(lines.into_iter().map(Geometry::LineString));
         geoms.push(Geometry::MultiPoint(MultiPoint::new(pts.iter().map(|&(x, y)| Point::new(x, y)).collect())));
 
-        for mode in [Mode::Coverage, Mode::Approx] {
-            let full = expanded(&burn_all(mode, &g, &geoms));
+        for rule in [Rule::Fraction, Rule::Touched, Rule::Centre] {
+            let full = burn_all(rule, &g, &geoms);
 
             // Feature split: two workers, ids kept, results concatenated.
             let k = split.min(geoms.len());
-            let mut b = Burner::new(mode);
+            let mut b = Burner::new(rule);
             let mut out = BurnResult::default();
+            let mut spans = Spans::default();
             let items = geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x));
-            b.burn_into(&g, items.clone().take(k), &mut out).expect("a");
-            Burner::new(mode).burn_into(&g, items.skip(k), &mut out).expect("b");
-            prop_assert_eq!(&expanded(&out), &full);
+            let polys = items.clone().filter(|(_, x)| is_polygonal(x));
+            let rest = items.filter(|(_, x)| !is_polygonal(x));
+            b.burn_polygons(&g, polys.clone().take(k), &mut spans).expect("a");
+            Burner::new(rule).burn_polygons(&g, polys.skip(k), &mut spans).expect("b");
+            b.burn_into(&g, rest.clone().take(k), &mut out).expect("a");
+            Burner::new(rule).burn_into(&g, rest.skip(k), &mut out).expect("b");
+            let mut split_burn = expanded(&out);
+            split_burn.extend(expanded_spans(&spans));
+            prop_assert_eq!(&split_burn, &full);
 
             // Tile split: every chunk made with window(), outputs merged.
             let mut tiled = std::collections::BTreeMap::new();
             for (r0, r1) in chunks(nrow, rchunk) {
                 for (c0, c1) in chunks(ncol, cchunk) {
                     let w = g.window(Span::new(Row(r0), Row(r1)).expect("r"), Span::new(Col(c0), Col(c1)).expect("c")).expect("w");
-                    for (key, mut v) in expanded(&burn_all(mode, &w, &geoms)) {
+                    for (key, mut v) in burn_all(rule, &w, &geoms) {
                         tiled.entry(key).or_insert_with(Vec::new).append(&mut v);
                     }
                 }
@@ -230,13 +236,13 @@ proptest! {
         geoms.extend(lines.into_iter().map(Geometry::LineString));
         geoms.push(Geometry::MultiPoint(MultiPoint::new(pts.iter().map(|&(x, y)| Point::new(x, y)).collect())));
 
-        for mode in [Mode::Coverage, Mode::Approx] {
-            let want = expanded(&burn_all(mode, &gn, &geoms));
-            let got: std::collections::BTreeMap<_, _> = expanded(&burn_all(mode, &gs, &geoms))
+        for rule in [Rule::Fraction, Rule::Touched, Rule::Centre] {
+            let want = burn_all(rule, &gn, &geoms);
+            let got: std::collections::BTreeMap<_, _> = burn_all(rule, &gs, &geoms)
                 .into_iter()
                 .map(|((t, id, r, c), v)| ((t, id, nrow - 1 - r, c), v))
                 .collect();
-            prop_assert_eq!(&got, &want, "mode {:?}", mode);
+            prop_assert_eq!(&got, &want, "rule {:?}", rule);
         }
     }
 }

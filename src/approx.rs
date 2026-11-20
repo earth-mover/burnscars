@@ -9,7 +9,8 @@
 use crate::error::BurnError;
 use crate::grid::{Col, GeomId, NorthUpGrid, Pos, Span, to_f64};
 use crate::input::InputBuf;
-use crate::output::{BurnResult, Emit};
+use crate::output::{PolyRecs, Rec};
+use crate::scratch::vec_bytes;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Icpt {
@@ -25,6 +26,12 @@ pub(crate) struct ApproxScratch {
     icpt: Vec<Icpt>,
     by_row: Vec<Icpt>,
     counts: Vec<usize>,
+}
+
+impl ApproxScratch {
+    pub(crate) fn bytes(&self) -> usize {
+        vec_bytes(&self.icpt) + vec_bytes(&self.by_row) + vec_bytes(&self.counts)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,7 +81,7 @@ pub(crate) fn burn(
     grid: &NorthUpGrid,
     id: GeomId,
     s: &mut ApproxScratch,
-    out: &mut BurnResult,
+    out: &mut PolyRecs,
 ) -> Result<(), BurnError> {
     let Some(env) = input.envelope() else {
         return Ok(());
@@ -148,12 +155,12 @@ pub(crate) fn burn(
         row_icpts
             .iter()
             .filter_map(|ix| step(&mut st, ix, grid))
-            .for_each(|cols| out.push(id, Emit::Run { row, cols }));
+            .for_each(|cols| out.push(Rec::run(row, cols)));
         // The polygon goes past the right window edge.
         if st.winding != 0
             && let Some(s) = st.run_start.filter(|&s| s < c1)
         {
-            out.push(id, Emit::Run { row, cols: Span::from_parts(Col(s), Col(c1)) });
+            out.push(Rec::run(row, Span::from_parts(Col(s), Col(c1))));
         }
     }
     Ok(())

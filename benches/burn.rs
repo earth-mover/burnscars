@@ -1,8 +1,8 @@
-//! Benchmarks (spec: Benchmarks). Synthetic cases, both modes.
+//! Benchmarks (spec: Benchmarks). Synthetic cases, every rule.
 
 #![expect(clippy::expect_used, reason = "bench code; a failed burn must stop the run")]
 
-use burnscars::{Burner, GeomId, Grid, Mode};
+use burnscars::{Burner, GeomId, Grid, Rule, Spans};
 use criterion::{Criterion, criterion_group, criterion_main};
 use geo_types::{LineString, Polygon, coord};
 use std::hint::black_box;
@@ -39,6 +39,8 @@ fn coastline(n: usize) -> Polygon<f64> {
     Polygon::new(pts, vec![])
 }
 
+const RULES: [Rule; 3] = [Rule::Fraction, Rule::Touched, Rule::Centre];
+
 #[expect(clippy::cast_possible_truncation, reason = "bench indices")]
 fn bench(c: &mut Criterion) {
     let big = circle(1_000_000, 50.0, 50.0, 40.0);
@@ -48,25 +50,38 @@ fn bench(c: &mut Criterion) {
     let coast = coastline(200_000);
     for side in [1024_u32, 4096] {
         let g = Grid::from_extent(0.0, 0.0, 1000.0, 1000.0, side, side).expect("grid");
-        for mode in [Mode::Coverage, Mode::Approx] {
-            c.bench_function(&format!("coastline_200k/{side}/{mode:?}"), |b| {
-                let mut burner = Burner::new(mode);
-                b.iter(|| black_box(burner.burn(&g, [(GeomId(0), &coast)]).expect("burn")));
+        for rule in RULES {
+            c.bench_function(&format!("coastline_200k/{side}/{rule:?}"), |b| {
+                let mut burner = Burner::new(rule);
+                let mut out = Spans::default();
+                b.iter(|| {
+                    out.clear();
+                    burner.burn_polygons(&g, [(GeomId(0), &coast)], &mut out).expect("burn");
+                    black_box(&out);
+                });
             });
         }
     }
     for side in [100_u32, 1_000, 10_000, 31_623] {
         let g = Grid::from_extent(0.0, 0.0, 100.0, 100.0, side, side).expect("grid");
-        for mode in [Mode::Coverage, Mode::Approx] {
-            c.bench_function(&format!("circle_1e6/{side}/{mode:?}"), |b| {
-                let mut burner = Burner::new(mode);
-                b.iter(|| black_box(burner.burn(&g, [(GeomId(0), &big)]).expect("burn")));
-            });
-            c.bench_function(&format!("small_1e4/{side}/{mode:?}"), |b| {
-                let mut burner = Burner::new(mode);
+        for rule in RULES {
+            c.bench_function(&format!("circle_1e6/{side}/{rule:?}"), |b| {
+                let mut burner = Burner::new(rule);
+                let mut out = Spans::default();
                 b.iter(|| {
+                    out.clear();
+                    burner.burn_polygons(&g, [(GeomId(0), &big)], &mut out).expect("burn");
+                    black_box(&out);
+                });
+            });
+            c.bench_function(&format!("small_1e4/{side}/{rule:?}"), |b| {
+                let mut burner = Burner::new(rule);
+                let mut out = Spans::default();
+                b.iter(|| {
+                    out.clear();
                     let items = small.iter().enumerate().map(|(i, p)| (GeomId(i as u32), p));
-                    black_box(burner.burn(&g, items).expect("burn"))
+                    burner.burn_polygons(&g, items, &mut out).expect("burn");
+                    black_box(&out);
                 });
             });
         }

@@ -7,12 +7,12 @@
 //!
 //! Properties:
 //! 1. Coverage conserves area: the burned area equals the ring area clipped to the grid.
-//! 2. The tables are well formed: fractions in (0, 1], runs inside the grid, each cell
+//! 2. The spans are well formed: weights in (0, 1], cells inside the grid, each cell
 //!    at most once.
 //! 3. The per-cell cover does not change with ring orientation or start vertex.
 //! 4. The per-cell cover equals an exact per-cell clip (Sutherland-Hodgman, shoelace)
 //!    on grids up to 16 x 16.
-//! 5. A full coverage cell is in approx runs; an untouched coverage cell is not.
+//! 5. A full coverage cell is in the centre-rule cells; an untouched coverage cell is not.
 //! 6. A burn at 2x resolution, averaged over 2 x 2 blocks, equals the 1x burn.
 //!
 //! Long run: `PROPTEST_CASES=100000 cargo test --release --test properties`.
@@ -24,7 +24,10 @@
     reason = "test code: small indices, a failed burn fails the test"
 )]
 
-use burnscars::{BurnResult, Burner, GeomId, Grid, Mode};
+mod common;
+
+use burnscars::{GeomId, Grid, Rule, Spans};
+use common::{burn_spans, densify, edge_cells};
 use geo_types::{LineString, Polygon, coord};
 use proptest::prelude::*;
 
@@ -347,39 +350,32 @@ fn clipped_area(r: &[P], e: &Ext) -> f64 {
     shoelace(&c).abs()
 }
 
-fn burn1(r: &[P], g: &G, mode: Mode) -> BurnResult {
-    burn_holed(r, &[], g, mode)
+fn burn1(r: &[P], g: &G, rule: Rule) -> Spans {
+    burn_holed(r, &[], g, rule)
 }
 
-fn burn_holed(r: &[P], holes: &[Vec<P>], g: &G, mode: Mode) -> BurnResult {
+fn burn_holed(r: &[P], holes: &[Vec<P>], g: &G, rule: Rule) -> Spans {
     let ls =
         |r: &[P]| -> LineString<f64> { r.iter().map(|&(x, y)| coord! { x: x, y: y }).collect() };
     let p = Polygon::new(ls(r), holes.iter().map(|h| ls(h)).collect());
-    Burner::new(mode)
-        .burn(&g.grid(), [(GeomId(0), &p)])
+    burn_spans(rule, &g.grid(), [(GeomId(0), &p)])
         .unwrap_or_else(|e| panic!("burn failed: {e}\n{}\n{}", fmt_grid(g), fmt_ring(r)))
 }
 
-/// Dense row-major cover from the tables.
-fn cover(res: &BurnResult, g: &G) -> Vec<f64> {
+/// Dense row-major cover from the spans.
+fn cover(res: &Spans, g: &G) -> Vec<f64> {
     let nc = g.nc();
     let mut m = vec![0.0; nc * g.nr()];
-    for x in res.runs.iter() {
-        for c in x.cols.range() {
-            m[x.row.0 as usize * nc + c as usize] += 1.0;
-        }
-    }
-    for e in res.edges.iter() {
-        m[e.row.0 as usize * nc + e.col.0 as usize] += f64::from(e.fraction);
+    for ((_, row, col), w) in densify(res) {
+        m[row as usize * nc + col as usize] += f64::from(w);
     }
     m
 }
 
-fn area(res: &BurnResult, g: &G) -> f64 {
+fn area(res: &Spans, g: &G) -> f64 {
     let l = *g.grid().lattice();
-    let runs: f64 = res.runs.iter().map(|x| f64::from(x.cols.width())).sum();
-    let edges: f64 = res.edges.iter().map(|e| f64::from(e.fraction)).sum();
-    l.x().dx() * l.y().dy() * (runs + edges)
+    let cells: f64 = densify(res).values().map(|&w| f64::from(w)).sum();
+    l.x().dx() * l.y().dy() * cells
 }
 
 fn fmt_ring(r: &[P]) -> String {
@@ -406,7 +402,7 @@ fn check_per_cell(g: &G, r: &[P]) -> Result<(), TestCaseError> {
 
 /// Property 4 for a shell with holes strictly inside it.
 fn check_per_cell_holed(g: &G, r: &[P], holes: &[Vec<P>]) -> Result<(), TestCaseError> {
-    let m = cover(&burn_holed(r, holes, g, Mode::Coverage), g);
+    let m = cover(&burn_holed(r, holes, g, Rule::Fraction), g);
     let (e, res) = (g.ext, g.res);
     for row in 0..g.nr() {
         for col in 0..g.nc() {
@@ -460,8 +456,8 @@ proptest! {
             if rev { v.iter().rev().copied().collect() } else { v.to_vec() }
         };
         let (ring, shell, hole) = (orient(&r, flip[0]), orient(&bx, flip[1]), orient(&r, flip[2]));
-        let a = cover(&burn1(&ring, &g, Mode::Coverage), &g);
-        let b = cover(&burn_holed(&shell, std::slice::from_ref(&hole), &g, Mode::Coverage), &g);
+        let a = cover(&burn1(&ring, &g, Rule::Fraction), &g);
+        let b = cover(&burn_holed(&shell, std::slice::from_ref(&hole), &g, Rule::Fraction), &g);
         for (i, (x, y)) in a.iter().zip(&b).enumerate() {
             prop_assert!((x + y - 1.0).abs() <= 2e-6,
                 "cell {i}: ring {x} + complement {y} != 1 (flip {flip:?})\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
@@ -470,10 +466,10 @@ proptest! {
 
     #[test]
     fn hole_conserves_area((g, r, h) in grid_up_to(40).prop_flat_map(holed_on)) {
-        let res = burn_holed(&r, std::slice::from_ref(&h), &g, Mode::Coverage);
+        let res = burn_holed(&r, std::slice::from_ref(&h), &g, Rule::Fraction);
         let (got, truth) = (area(&res, &g), clipped_area(&r, &g.ext) - clipped_area(&h, &g.ext));
         let cell = g.res * g.res;
-        let tol = 1e-6 * truth.max(cell) + res.edges.len() as f64 * cell * 2e-7;
+        let tol = 1e-6 * truth.max(cell) + edge_cells(&res).len() as f64 * cell * 2e-7;
         prop_assert!((got - truth).abs() <= tol,
             "area {got} vs {truth}\n{}\n{}\nhole {}", fmt_grid(&g), fmt_ring(&r), fmt_ring(&h));
     }
@@ -485,45 +481,38 @@ proptest! {
 
     #[test]
     fn coverage_conserves_area((g, r) in ring()) {
-        let res = burn1(&r, &g, Mode::Coverage);
+        let res = burn1(&r, &g, Rule::Fraction);
         let (got, truth) = (area(&res, &g), clipped_area(&r, &g.ext));
         let cell = g.res * g.res;
         // f32 fractions: a few ulp of slack per edge cell.
-        let tol = 1e-6 * truth.max(cell) + res.edges.len() as f64 * cell * 2e-7;
+        let tol = 1e-6 * truth.max(cell) + edge_cells(&res).len() as f64 * cell * 2e-7;
         prop_assert!((got - truth).abs() <= tol,
             "area {got} vs {truth} (diff {:+e}, tol {tol:e})\n{}\n{}", got - truth, fmt_grid(&g), fmt_ring(&r));
     }
 
+    /// `densify` panics on a cell that two stretches cover.
     #[test]
     fn tables_are_well_formed((g, r) in ring()) {
-        let res = burn1(&r, &g, Mode::Coverage);
-        let mut seen = std::collections::HashSet::new();
-        for x in res.runs.iter() {
-            prop_assert!(x.row.0 < g.nrow && x.cols.end().0 <= g.ncol, "bad run {x:?}");
-            for c in x.cols.range() {
-                prop_assert!(seen.insert((x.row.0, c)), "cell twice (run) {x:?}\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
-            }
-        }
-        for e in res.edges.iter() {
-            prop_assert!(e.row.0 < g.nrow && e.col.0 < g.ncol, "bad edge {e:?}");
-            prop_assert!(e.fraction > 0.0 && e.fraction <= 1.0 + 1e-6,
-                "fraction out of range {e:?}\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
-            prop_assert!(seen.insert((e.row.0, e.col.0)), "cell twice (edge) {e:?}\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
+        let res = burn1(&r, &g, Rule::Fraction);
+        for ((_, row, col), w) in densify(&res) {
+            prop_assert!(row < g.nrow && col < g.ncol, "bad cell {:?}", (row, col));
+            prop_assert!(w > 0.0 && w <= 1.0,
+                "weight out of range {w} at {:?}\n{}\n{}", (row, col), fmt_grid(&g), fmt_ring(&r));
         }
     }
 
     #[test]
     fn invariant_under_orientation_and_start((g, r) in ring(), k in 0_usize..8) {
-        let base = cover(&burn1(&r, &g, Mode::Coverage), &g);
+        let base = cover(&burn1(&r, &g, Rule::Fraction), &g);
         let rev: Vec<P> = r.iter().rev().copied().collect();
-        let worst = max_diff(&base, &cover(&burn1(&rev, &g, Mode::Coverage), &g));
+        let worst = max_diff(&base, &cover(&burn1(&rev, &g, Rule::Fraction), &g));
         prop_assert!(worst <= 1e-5, "reversed ring differs by {worst}\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
         let n = r.len() - 1;
         let s = k % n;
         let mut rot: Vec<P> = r[s..n].to_vec();
         rot.extend_from_slice(&r[..s]);
         rot.push(rot[0]);
-        let worst = max_diff(&base, &cover(&burn1(&rot, &g, Mode::Coverage), &g));
+        let worst = max_diff(&base, &cover(&burn1(&rot, &g, Rule::Fraction), &g));
         prop_assert!(worst <= 1e-5, "start-rotated ring differs by {worst}\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
     }
 
@@ -534,8 +523,8 @@ proptest! {
 
     #[test]
     fn approx_agrees_with_coverage_on_full_and_empty_cells((g, r) in ring()) {
-        let cov = cover(&burn1(&r, &g, Mode::Coverage), &g);
-        let apx = cover(&burn1(&r, &g, Mode::Approx), &g);
+        let cov = cover(&burn1(&r, &g, Rule::Fraction), &g);
+        let apx = cover(&burn1(&r, &g, Rule::Centre), &g);
         for (i, (c, a)) in cov.iter().zip(&apx).enumerate() {
             if *c >= 1.0 - 1e-6 {
                 prop_assert!(*a > 0.0, "cell {i} full in coverage, absent in approx\n{}\n{}", fmt_grid(&g), fmt_ring(&r));
@@ -548,9 +537,9 @@ proptest! {
 
     #[test]
     fn doubling_resolution_aggregates_exactly((g, r) in ring()) {
-        let m1 = cover(&burn1(&r, &g, Mode::Coverage), &g);
+        let m1 = cover(&burn1(&r, &g, Rule::Fraction), &g);
         let g2 = g.doubled();
-        let m2 = cover(&burn1(&r, &g2, Mode::Coverage), &g2);
+        let m2 = cover(&burn1(&r, &g2, Rule::Fraction), &g2);
         let (nc, nc2) = (g.nc(), g2.nc());
         for row in 0..g.nr() {
             for col in 0..nc {

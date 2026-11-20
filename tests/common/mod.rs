@@ -3,8 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use burnscars::{BurnResult, Grid};
-use geo_types::{LineString, Polygon, coord};
+use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Rule, Spans};
+use geo_traits::GeometryTrait;
+use geo_types::{Geometry, LineString, Polygon, coord};
 
 #[expect(clippy::panic, reason = "test helper: a bad test grid is a test bug")]
 pub(crate) fn grid(xmin: f64, ymin: f64, xmax: f64, ymax: f64, ncol: u32, nrow: u32) -> Grid {
@@ -22,25 +23,62 @@ pub(crate) fn poly(ext: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon<f64> 
     Polygon::new(ls(ext), holes.iter().map(|h| ls(h)).collect())
 }
 
-/// Sum of runs and edge fractions times the cell area.
-pub(crate) fn covered_area(r: &BurnResult, g: &Grid) -> f64 {
-    let l = g.lattice();
-    let runs: f64 = r.runs.iter().map(|x| f64::from(x.cols.width())).sum();
-    let edges: f64 = r.edges.iter().map(|e| f64::from(e.fraction)).sum();
-    l.x().dx() * l.y().dy() * (runs + edges)
+/// Burns polygons into a new `Spans`.
+pub(crate) fn burn_spans<G, I>(rule: Rule, g: &Grid, items: I) -> Result<Spans, BurnError>
+where
+    G: GeometryTrait<T = f64>,
+    I: IntoIterator<Item = (GeomId, G)>,
+{
+    let mut out = Spans::default();
+    Burner::new(rule).burn_polygons(g, items, &mut out)?;
+    Ok(out)
 }
 
-/// Expanded form: (table, id, row, col) -> value bits. Runs give 1.0 per cell.
-pub(crate) fn expanded(r: &BurnResult) -> BTreeMap<(u8, u32, u32, u32), Vec<u32>> {
-    let mut m: BTreeMap<(u8, u32, u32, u32), Vec<u32>> = BTreeMap::new();
-    for x in r.runs.iter() {
-        for c in x.cols.range() {
-            m.entry((0, x.id.0, x.row.0, c)).or_default().push(1.0_f32.to_bits());
+/// `(id, row, col) -> weight`, 1.0 with no values (test only).
+/// Panics on a cell that two stretches cover.
+#[expect(clippy::panic, reason = "test helper: a cell twice is a test failure")]
+pub(crate) fn densify(s: &Spans) -> BTreeMap<(u32, u32, u32), f32> {
+    let mut m = BTreeMap::new();
+    for (f, (&id, &row)) in s.id.iter().zip(&s.row).enumerate() {
+        for st in s.fiber_ptr[f]..s.fiber_ptr[f + 1] {
+            let ws = s
+                .values
+                .as_ref()
+                .map(|v| &v.weight[v.value_ptr[st] as usize..v.value_ptr[st + 1] as usize]);
+            for (i, c) in (s.col_start[st]..s.col_end[st]).enumerate() {
+                let w = ws.map_or(1.0, |ws| if ws.len() == 1 { ws[0] } else { ws[i] });
+                if m.insert((id, row, c), w).is_some() {
+                    panic!("cell {:?} twice", (id, row, c));
+                }
+            }
         }
     }
-    for e in r.edges.iter() {
-        m.entry((0, e.id.0, e.row.0, e.col.0)).or_default().push(e.fraction.to_bits());
-    }
+    m
+}
+
+/// Sum of the cell weights times the cell area.
+pub(crate) fn covered_area(s: &Spans, g: &Grid) -> f64 {
+    let l = g.lattice();
+    let cells: f64 = densify(s).values().map(|&w| f64::from(w)).sum();
+    l.x().dx() * l.y().dy() * cells
+}
+
+/// The cells with a weight below 1: the boundary cells under `Rule::Fraction`.
+pub(crate) fn edge_cells(s: &Spans) -> Vec<((u32, u32, u32), f32)> {
+    densify(s).into_iter().filter(|&(_, w)| w < 1.0).collect()
+}
+
+/// Expanded form: (table, id, row, col) -> value bits.
+pub(crate) type Expanded = BTreeMap<(u8, u32, u32, u32), Vec<u32>>;
+
+/// Expanded form of the polygon spans, as table 0.
+pub(crate) fn expanded_spans(s: &Spans) -> Expanded {
+    densify(s).into_iter().map(|((id, r, c), w)| ((0, id, r, c), vec![w.to_bits()])).collect()
+}
+
+/// Expanded form of the lines (table 1) and the points (table 2).
+pub(crate) fn expanded(r: &BurnResult) -> Expanded {
+    let mut m = Expanded::new();
     for l in r.lines.iter() {
         m.entry((1, l.id.0, l.row.0, l.col.0)).or_default().push(l.length.to_bits());
     }
@@ -51,6 +89,33 @@ pub(crate) fn expanded(r: &BurnResult) -> BTreeMap<(u8, u32, u32, u32), Vec<u32>
         v.sort_unstable();
     }
     m
+}
+
+/// True for a polygon, a multipolygon, a rect or a triangle.
+pub(crate) fn is_polygonal(g: &Geometry<f64>) -> bool {
+    matches!(
+        g,
+        Geometry::Polygon(_)
+            | Geometry::MultiPolygon(_)
+            | Geometry::Rect(_)
+            | Geometry::Triangle(_)
+    )
+}
+
+/// Burns a mixed list, id = index: polygons into `Spans`, lines and points into `BurnResult`.
+/// The expanded forms of both, in one map.
+#[expect(clippy::cast_possible_truncation, reason = "test indices")]
+pub(crate) fn burn_mixed(
+    rule: Rule,
+    g: &Grid,
+    geoms: &[Geometry<f64>],
+) -> Result<Expanded, BurnError> {
+    let items = || geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x));
+    let polys = burn_spans(rule, g, items().filter(|(_, x)| is_polygonal(x)))?;
+    let rest = Burner::new(rule).burn(g, items().filter(|(_, x)| !is_polygonal(x)))?;
+    let mut m = expanded(&rest);
+    m.extend(expanded_spans(&polys));
+    Ok(m)
 }
 
 /// Minimal CSV reader: comma separator, double-quoted fields, no escaped quotes.

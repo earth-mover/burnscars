@@ -14,6 +14,7 @@ use crate::geom::{
     side::Side,
     walker_grid::{LocalCol, LocalRow, WalkerGrid},
 };
+use crate::scratch::vec_bytes;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Valid {
@@ -61,6 +62,10 @@ pub(crate) struct Arena {
 }
 
 impl Arena {
+    pub(crate) fn bytes(&self) -> usize {
+        vec_bytes(&self.coords) + vec_bytes(&self.travs)
+    }
+
     pub(crate) fn clear(&mut self) {
         self.coords.clear();
         self.travs.clear();

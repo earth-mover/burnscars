@@ -3,13 +3,13 @@
 
 mod common;
 
-use burnscars::{Burner, GeomId, Mode};
-use common::{covered_area, grid, poly};
+use burnscars::{GeomId, Rule, Spans};
+use common::{burn_spans, covered_area, edge_cells, grid, poly};
 use geo_types::{MultiPolygon, Polygon};
 
 #[expect(clippy::expect_used, reason = "test helper")]
-fn burn(p: &Polygon<f64>, g: &burnscars::Grid) -> burnscars::BurnResult {
-    Burner::new(Mode::Coverage).burn(g, [(GeomId(0), p)]).expect("burn")
+fn burn(p: &Polygon<f64>, g: &burnscars::Grid) -> Spans {
+    burn_spans(Rule::Fraction, g, [(GeomId(0), p)]).expect("burn")
 }
 
 fn tri(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
@@ -30,7 +30,7 @@ fn lattice_snap_keeps_the_walk_on_the_grid() {
     ];
     for (pts, area) in cases {
         let r = burn(&poly(&pts, &[]), &g);
-        assert!(!r.runs.is_empty());
+        assert!(r.values.as_ref().is_some_and(|v| v.weight.contains(&1.0)));
         assert!((covered_area(&r, &g) - area).abs() < 1e-6 * area, "{pts:?}");
     }
 }
@@ -61,7 +61,7 @@ fn row_centre_crossing_on_a_wall_keeps_its_winding() {
 fn edge_on_a_row_boundary() {
     let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
     let r = burn(&poly(&[(2.0, 2.0), (8.0, 2.0), (8.0, 5.0), (2.0, 5.0), (2.0, 2.0)], &[]), &g);
-    assert!(r.edges.is_empty());
+    assert!(edge_cells(&r).is_empty());
     assert!((covered_area(&r, &g) - 18.0).abs() < 1e-9);
 }
 
@@ -81,7 +81,7 @@ fn corner_touch_multipolygon_is_not_over_counted() {
         poly(&[(2.0, 2.0), (5.0, 2.0), (5.0, 5.0), (2.0, 5.0), (2.0, 2.0)], &[]),
         poly(&[(5.0, 5.0), (8.0, 5.0), (8.0, 8.0), (5.0, 8.0), (5.0, 5.0)], &[]),
     ]);
-    let r = Burner::new(Mode::Coverage).burn(&g, [(GeomId(0), &mp)]).expect("burn");
+    let r = burn_spans(Rule::Fraction, &g, [(GeomId(0), &mp)]).expect("burn");
     assert!((covered_area(&r, &g) - 18.0).abs() < 1e-9);
 }
 
@@ -93,7 +93,7 @@ fn collinear_vertices_do_not_change_the_output() {
         &g,
     );
     let b = burn(&poly(&[(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)], &[]), &g);
-    assert_eq!(common::expanded(&a), common::expanded(&b));
+    assert_eq!(common::expanded_spans(&a), common::expanded_spans(&b));
 }
 
 // Review focus 3.
@@ -117,11 +117,11 @@ fn sliver_fractions_stay_in_range() {
     let g = grid(0.0, 0.0, 10.0, 10.0, 10, 10);
     let pts = [(1.1, 1.1), (8.9, 1.1 + 1e-9), (8.9, 1.1 + 2e-9), (1.1, 1.1)];
     let r = burn(&poly(&pts, &[]), &g);
-    assert!(r.edges.iter().all(|e| e.fraction > 0.0 && e.fraction < 1.0));
+    assert!(edge_cells(&r).iter().all(|e| e.1 > 0.0 && e.1 < 1.0));
     let sub = poly(&[(1.1, 1.1), (1.2, 1.1), (1.15, 1.2), (1.1, 1.1)], &[]);
     let r = burn(&sub, &g);
-    assert_eq!(r.edges.len(), 1);
-    assert!(r.edges.iter().all(|e| e.fraction > 0.0 && e.fraction < 1.0));
+    assert_eq!(edge_cells(&r).len(), 1);
+    assert!(edge_cells(&r).iter().all(|e| e.1 > 0.0 && e.1 < 1.0));
 }
 
 #[test]
@@ -131,6 +131,6 @@ fn huge_finite_coordinates_do_not_panic() {
         &[(-1e300, -1e300), (1e300, -1e300), (1e300, 1e300), (-1e300, 1e300), (-1e300, -1e300)],
         &[],
     );
-    let r = Burner::new(Mode::Coverage).burn(&g, [(GeomId(0), &p)]);
+    let r = burn_spans(Rule::Fraction, &g, [(GeomId(0), &p)]);
     assert!(r.is_ok(), "{r:?}");
 }

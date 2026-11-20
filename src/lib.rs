@@ -7,37 +7,38 @@
 //!
 //! # Output as a sparse matrix
 //!
-//! The polygon output is the sparse coverage matrix `A[cell, geometry]`. The value is
-//! the fraction of the cell that the geometry covers, and it is 1 for interior cells.
-//! Zonal statistics are `(Aᵀv) / (Aᵀ1)` for a raster `v`. This is what exactextract
-//! computes.
+//! The polygon output is the sparse coverage matrix `W[geometry, cell]`, as a [`Spans`]
+//! table. The value is the fraction of the cell that the geometry covers, and it is 1 for
+//! interior cells. Zonal statistics are `(W v) / (W 1)` for a raster `v`. This is what
+//! exactextract computes.
 //!
-//! - `runs` is a run-length layer: each entry is one interval of columns in one row,
-//!   all with the value 1 ("RLE-CSR"). Plain CSR stores one entry per cell, which is
-//!   O(area). The runs keep the storage at O(perimeter).
-//! - `edges` is COO: explicit `(row, col, value)` triples.
-//! - The burn order is geometry-major, so `geom_ptr` is a CSC index with the geometry
-//!   as the column.
-//! - `to_row_major()` builds the CSR index (`row_ptr`).
-//! - Two geometries can cover the same cell, so the full object is a sparse
-//!   `(row, col, id)` tensor. One geometry has at most one record per cell.
+//! - A fiber is one geometry in one row. Fibers are sorted by `(id, row)`, so `fiber_ptr`
+//!   is a CSR index with the fiber as the row.
+//! - A fiber holds stretches of columns, sorted and not overlapping. A run is a stretch
+//!   with one value (the interior, at 1); a block is a stretch with one value per cell
+//!   (the boundary). The runs keep the storage at O(perimeter), not O(area).
+//! - Under [`Rule::Touched`] and [`Rule::Centre`] the cells have no weight, and every
+//!   stretch is a run.
+//!
+//! Lines and points go to [`BurnResult`] through [`Burner::burn_into`].
 //!
 //! Input must be valid OGC geometry. The fill rule is nonzero winding.
 //!
 //! # Example
 //!
 //! ```
-//! use burnscars::{Burner, GeomId, Grid, Mode};
+//! use burnscars::{Burner, GeomId, Grid, Rule, Spans};
 //! use geo_types::polygon;
 //!
 //! // A 4 x 4 grid over [0, 4] x [0, 4], and a square that covers 2 x 2 cells.
 //! let grid = Grid::from_extent(0.0, 0.0, 4.0, 4.0, 4, 4)?;
 //! let square = polygon![(x: 1.0, y: 1.0), (x: 3.0, y: 1.0), (x: 3.0, y: 3.0), (x: 1.0, y: 3.0)];
-//! let out = Burner::new(Mode::Coverage).burn(&grid, [(GeomId(0), &square)])?;
-//! // Full cells are in runs. Partial cells are in edges. Here all 4 cells are full.
-//! let edge_cells = out.edges.iter().count();
-//! let run_cells: u32 = out.runs.iter().map(|r| r.cols.width()).sum();
-//! assert_eq!(edge_cells + run_cells as usize, 4);
+//! let mut out = Spans::default();
+//! Burner::new(Rule::Fraction).burn_polygons(&grid, [(GeomId(0), &square)], &mut out)?;
+//! // Two fibers (rows 1 and 2), each one run over columns 1..3 at weight 1.
+//! assert_eq!(out.row, [1, 2]);
+//! assert_eq!((out.col_start.as_slice(), out.col_end.as_slice()), (&[1, 1][..], &[3, 3][..]));
+//! assert_eq!(out.values.map(|v| v.weight), Some(vec![1.0, 1.0]));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
@@ -54,10 +55,10 @@ mod point;
 mod scratch;
 mod sort;
 
-pub use burner::{Burner, Mode, bbox};
+pub use burner::{Burner, Rule, bbox};
 pub use error::{At, BurnError, GeomKind};
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span, XAxis, YAxis, YOrigin};
 pub use output::{
-    BurnResult, EdgeRef, Edges, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor,
-    RowMajorError, RunRef, Runs,
+    BurnResult, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor, RowMajorError, SpanValues,
+    Spans,
 };

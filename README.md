@@ -1,9 +1,9 @@
 # burnscars
 
 Sparse rasterization of polygons, lines and points onto a regular grid, in Rust.
-Polygons get exact per-cell coverage fractions (coverage mode) or the cell-centre
-rule (approx mode). Time and memory are O(perimeter): the output is sparse tables,
-never a dense raster.
+Polygons get exact per-cell coverage fractions (`Rule::Fraction`), every touched cell
+(`Rule::Touched`) or the cell-centre rule (`Rule::Centre`). Time and memory are
+O(perimeter): the output is sparse tables, never a dense raster.
 
 burnscars is a port of the controlledburn C++ core. It has no internal parallelism.
 Its grid windows use global lattice indices, so a caller can split the work by
@@ -34,9 +34,16 @@ geometry or by grid chunk and run it in parallel.
 
 ## Output
 
-Four tables in struct-of-arrays form: `runs` (interior intervals), `edges` (boundary
-cells with a coverage fraction), `lines` (length in cell), `points`. Indices are
-global, 0-based lattice indices; `col_end` is exclusive. Both lattice steps are > 0.
+Polygons (`Burner::burn_polygons`) give a `Spans` table: the sparse coverage matrix
+`W[geometry, cell]`. Each fiber is one geometry in one row, sorted by `(id, row)`, and
+holds stretches of columns: a run (one value, the interior at 1) or a block (one value
+per cell, the boundary fractions). Under `Rule::Touched` and `Rule::Centre` there are no
+values. Geometry ids must strictly increase.
+
+Lines and points (`Burner::burn_into`) give two tables in struct-of-arrays form:
+`lines` (length in cell) and `points`.
+
+Indices are global, 0-based lattice indices; `col_end` is exclusive. Both lattice steps are > 0.
 Columns run east. `YOrigin::NorthUp` puts row 0 at the north edge, and
 `YOrigin::SouthUp` puts it at the south edge. `Lattice::from_geotransform` takes a GDAL
 geotransform (`dy < 0` is north-up). See the crate docs for the relation to CSR and CSC
@@ -60,7 +67,6 @@ sparse matrices.
   side tests, in place of float arithmetic. exactextract does not do this, so the
   oracle fixtures can change on near-degenerate input. Decide which result is correct
   before the change, and record each changed fixture as a deliberate difference.
-- Merge adjacent one-cell runs and interior runs in a row.
 - A performance regression gate on the benchmarks.
 - Antimeridian. `XAxis::with_period` burns shifted copies at k·360, so convention A
   (split at ±180, as a multipolygon) and B (continuous past 180) work. To do: C, jumps
