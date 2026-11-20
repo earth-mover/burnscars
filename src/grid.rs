@@ -238,18 +238,20 @@ fn positive(axis: &'static str, step: f64) -> Result<(), GridError> {
 /// [-180, 180).
 ///
 /// ```
-/// use burnscars::{Burner, Col, GeomId, Grid, Lattice, Mode, Row, Span, XAxis, YAxis, YOrigin};
+/// use burnscars::{
+///     Burner, Col, GeomId, Grid, Lattice, Origin, Row, Rule, Span, Stretches, XAxis, YAxis, YOrigin,
+/// };
 /// use geo_types::Rect;
 ///
 /// let x = XAxis::new(165.0, 10.0)?.with_period(360.0)?;
 /// let y = YAxis::new(5.0, 10.0, YOrigin::SouthUp)?; // y0 = 5 is the south edge
 /// let grid = Grid::new(Lattice::new(x, y), Span::new(Row(0), Row(3))?, Span::new(Col(0), Col(4))?)?;
 /// let zone = Rect::new((-175.0, 15.0), (-165.0, 35.0));
-/// let out = Burner::new(Mode::Approx).burn(&grid, [(GeomId(0), zone)])?;
-/// let runs: Vec<(u32, std::ops::Range<u32>)> =
-///     out.runs.iter().map(|r| (r.row.0, r.cols.range())).collect();
-/// // The cells at longitude 190, latitude 30 and 20.
-/// assert_eq!(runs, [(2, 2..3), (1, 2..3)]);
+/// let mut out = Stretches::new(Rule::Centre);
+/// Burner::new(Rule::Centre).burn_polygons(&grid, [(GeomId(0), zone)], Origin::Grid, &mut out)?;
+/// // The cells at longitude 190, latitude 20 and 30: one fiber per row, in row order.
+/// assert_eq!(out.row, [1, 2]);
+/// assert_eq!((out.col_start, out.col_end), (vec![2, 2], vec![3, 3]));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]

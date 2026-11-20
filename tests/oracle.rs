@@ -4,8 +4,8 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use burnscars::{BurnResult, Burner, GeomId, Grid, Mode};
-use common::{hex, known_diff_cells, read_csv};
+use burnscars::{GeomId, Grid, Rule, Stretches};
+use common::{burn_spans, densify, hex, known_diff_cells, read_csv};
 
 const CASES: &str = include_str!("../fixtures/oracle/cases.csv");
 const COVERAGE: &str = include_str!("../fixtures/oracle/coverage.csv");
@@ -27,25 +27,19 @@ fn grid_of(r: &[String]) -> Grid {
 }
 
 #[expect(clippy::expect_used, reason = "test helper: a bad fixture row is a test bug")]
-fn burn(case: &[String], mode: Mode) -> BurnResult {
+fn burn(case: &[String], rule: Rule) -> Stretches {
     let bytes = hex(&case[1]);
     let g = wkb::reader::read_wkb(&bytes).expect("wkb");
-    Burner::new(mode).burn(&grid_of(case), [(GeomId(0), &g)]).expect("burn")
+    burn_spans(rule, &grid_of(case), [(GeomId(0), &g)]).expect("burn")
 }
 
-/// Per-cell fraction, runs as 1, cells below TOL removed.
-fn cells(r: &BurnResult) -> BTreeMap<(u32, u32), f64> {
-    let mut m = BTreeMap::new();
-    for x in r.runs.iter() {
-        for c in x.cols.range() {
-            m.insert((x.row.0, c), 1.0);
-        }
-    }
-    for e in r.edges.iter() {
-        m.insert((e.row.0, e.col.0), f64::from(e.fraction));
-    }
-    m.retain(|_, f| *f >= TOL);
-    m
+/// Per-cell fraction (1 with no values), cells below TOL removed.
+fn cells(r: &Stretches) -> BTreeMap<(u32, u32), f64> {
+    densify(r)
+        .into_iter()
+        .map(|((_, row, col), w)| ((row, col), f64::from(w)))
+        .filter(|(_, f)| *f >= TOL)
+        .collect()
 }
 
 #[expect(clippy::expect_used, reason = "test helper: a bad fixture row is a test bug")]
@@ -77,12 +71,12 @@ fn diff_cells(
 }
 
 /// Case names whose difference set is not the listed one (empty if not listed).
-fn mismatches(table: &str, mode: Mode, cases: &str, oracle: &str) -> Vec<String> {
+fn mismatches(table: &str, rule: Rule, cases: &str, oracle: &str) -> Vec<String> {
     let known = known_diff_cells(table);
     let rows = read_csv(oracle);
     let mut failures = Vec::new();
     for case in &read_csv(cases)[1..] {
-        let got = cells(&burn(case, mode));
+        let got = cells(&burn(case, rule));
         let want = oracle_cells(&rows[1..], &case[0]);
         let diff = diff_cells(&got, &want);
         if known.get(&case[0]).map_or(!diff.is_empty(), |listed| *listed != diff) {
@@ -95,19 +89,19 @@ fn mismatches(table: &str, mode: Mode, cases: &str, oracle: &str) -> Vec<String>
     failures
 }
 
-fn compare(table: &str, mode: Mode, oracle: &str) {
-    let failures = mismatches(table, mode, CASES, oracle);
+fn compare(table: &str, rule: Rule, oracle: &str) {
+    let failures = mismatches(table, rule, CASES, oracle);
     assert!(failures.is_empty(), "{table} differs from the oracle for: {failures:?}");
 }
 
 #[test]
 fn coverage_matches_exactextract() {
-    compare("coverage", Mode::Coverage, COVERAGE);
+    compare("coverage", Rule::Fraction, COVERAGE);
 }
 
 #[test]
 fn approx_matches_gdal_centre_rule() {
-    compare("approx", Mode::Approx, APPROX);
+    compare("approx", Rule::Centre, APPROX);
 }
 
 /// Differential fuzz against the live oracle: `just fuzz-oracle` (needs uv).
@@ -124,9 +118,9 @@ fn fuzz_against_live_oracle() {
     assert!(status.success());
     let cases = std::fs::read_to_string(dir.join("cases.csv")).expect("cases");
     let cov = std::fs::read_to_string(dir.join("coverage.csv")).expect("coverage");
-    let failures = mismatches("coverage", Mode::Coverage, &cases, &cov);
+    let failures = mismatches("coverage", Rule::Fraction, &cases, &cov);
     assert!(failures.is_empty(), "coverage differs from the live oracle for: {failures:?}");
     let approx = std::fs::read_to_string(dir.join("approx.csv")).expect("approx");
-    let failures = mismatches("approx", Mode::Approx, &cases, &approx);
+    let failures = mismatches("approx", Rule::Centre, &cases, &approx);
     assert!(failures.is_empty(), "approx differs from the live oracle for: {failures:?}");
 }

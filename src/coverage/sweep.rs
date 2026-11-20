@@ -8,10 +8,8 @@
 use crate::coverage::CellAcc;
 use crate::coverage::fraction::CellClass;
 use crate::geom::walker_grid::{LocalCol, WalkerGrid};
-use crate::grid::GeomId;
 use crate::grid::{Col, Row, Span};
-use crate::output::BurnResult;
-use crate::output::Emit;
+use crate::output::{PolyRecs, Rec};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MergedCell {
@@ -63,13 +61,7 @@ pub(crate) fn step(st: &mut SweepState, cell: MergedCell, n_cols: usize) -> [Opt
 /// the winding of the rings that cover the cell without touching it (exactextract gets
 /// them from its flood fill); inside a CCW ring the winding is -1, hence the minus. controlledburn uses `Σ cov_r` only and drops the boundary cells
 /// of a hole that is off the lattice.
-pub(crate) fn emit(
-    acc: &[CellAcc],
-    ring_wind: &mut [i32],
-    wg: &WalkerGrid,
-    id: GeomId,
-    out: &mut BurnResult,
-) {
+pub(crate) fn emit(acc: &[CellAcc], ring_wind: &mut [i32], wg: &WalkerGrid, out: &mut PolyRecs) {
     for row_cells in acc.chunk_by(|a, b| a.row == b.row) {
         let Some(row) = row_cells.first().and_then(|c| wg.row(c.row)) else { continue };
         let mut st = SweepState::default();
@@ -88,7 +80,7 @@ pub(crate) fn emit(
                 .into_iter()
                 .flatten()
                 .filter_map(|e| to_global(e, row, wg))
-                .for_each(|e| out.push(id, e));
+                .for_each(|e| out.push(e));
             for c in cs {
                 if let Some(w) = ring_wind.get_mut(c.ring as usize) {
                     *w += c.wind;
@@ -103,7 +95,7 @@ pub(crate) fn emit(
     }
 }
 
-fn to_global(e: LocalEmit, row: Row, wg: &WalkerGrid) -> Option<Emit> {
+fn to_global(e: LocalEmit, row: Row, wg: &WalkerGrid) -> Option<Rec> {
     match e {
         LocalEmit::Run(a, b) => {
             let (a, b) = (a.0.max(1), b.0.min(wg.n_cols() + 1));
@@ -112,9 +104,9 @@ fn to_global(e: LocalEmit, row: Row, wg: &WalkerGrid) -> Option<Emit> {
             }
             let start = wg.col(LocalCol(a))?;
             let last = wg.col(LocalCol(b - 1))?;
-            Some(Emit::Run { row, cols: Span::from_parts(start, Col(last.0 + 1)) })
+            Some(Rec::run(row, Span::from_parts(start, Col(last.0 + 1))))
         }
-        LocalEmit::Edge(c, w) => Some(Emit::Edge { row, col: wg.col(c)?, fraction: w }),
+        LocalEmit::Edge(c, w) => Some(Rec::edge(row, wg.col(c)?, w)),
     }
 }
 

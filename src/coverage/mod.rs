@@ -26,8 +26,8 @@ use crate::geom::{
 use crate::grid::{GeomId, NorthUpGrid};
 use crate::input::InputBuf;
 use crate::input::RingRole;
-use crate::output::BurnResult;
-use crate::scratch::WalkScratch;
+use crate::output::PolyRecs;
+use crate::scratch::{WalkScratch, vec_bytes};
 use fraction::Chain;
 use fraction::{analytical_fraction, closed_ring_fraction, left_hand_area, to_f32};
 use walk::Valid;
@@ -55,6 +55,20 @@ pub(crate) struct CoverageScratch {
     counts: Vec<usize>,
 }
 
+impl CoverageScratch {
+    pub(crate) fn bytes(&self) -> usize {
+        let Self { valid, ranges, chains, lha, acc, ring_wind, trav_tmp, counts } = self;
+        vec_bytes(valid)
+            + vec_bytes(ranges)
+            + vec_bytes(chains)
+            + vec_bytes(lha)
+            + vec_bytes(acc)
+            + vec_bytes(ring_wind)
+            + vec_bytes(trav_tmp)
+            + vec_bytes(counts)
+    }
+}
+
 /// controlledburn `process_polygon` ([cpp/src/scanline.cpp](https://github.com/hypertidy/controlledburn/blob/1f8a25fd030ac6ec1aa2fbf2c69ee35df8c17558/cpp/src/scanline.cpp)) for all rings of one
 /// geometry at once, as exactextract `RasterCellIntersection::process`
 /// ([src/raster_cell_intersection.cpp](https://github.com/isciences/exactextract/blob/67969d99d1dfe1115be955087e2c48e1aab133e2/src/raster_cell_intersection.cpp)); one sweep per geometry.
@@ -64,7 +78,7 @@ pub(crate) fn burn(
     id: GeomId,
     walk_s: &mut WalkScratch,
     s: &mut CoverageScratch,
-    out: &mut BurnResult,
+    out: &mut PolyRecs,
 ) -> Result<(), BurnError> {
     let Some(env) = input.envelope() else {
         return Ok(());
@@ -97,7 +111,7 @@ pub(crate) fn burn(
     s.acc.sort_unstable_by_key(|a| (a.row, a.col, a.ring));
     s.ring_wind.clear();
     s.ring_wind.resize(input.rings().count(), 0);
-    sweep::emit(&s.acc, &mut s.ring_wind, &wg, id, out);
+    sweep::emit(&s.acc, &mut s.ring_wind, &wg, out);
     Ok(())
 }
 

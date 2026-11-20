@@ -2,17 +2,13 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-
-use burnscars::{BurnResult, Burner, GeomId, Mode};
-use common::{covered_area, grid, poly};
+use burnscars::{GeomId, Rule, Stretches};
+use common::{burn_spans, covered_area, densify, grid, poly};
 use geo_types::MultiPolygon;
 
-fn one_record_per_cell(r: &BurnResult) -> bool {
-    let mut seen = BTreeSet::new();
-    let runs = r.runs.iter().flat_map(|x| x.cols.range().map(move |c| (x.id.0, x.row.0, c)));
-    let edges = r.edges.iter().map(|e| (e.id.0, e.row.0, e.col.0));
-    runs.chain(edges).all(|k| seen.insert(k))
+/// `densify` panics on a cell that two stretches cover.
+fn one_record_per_cell(r: &Stretches) -> bool {
+    densify(r).len() == r.col_start.iter().zip(&r.col_end).map(|(a, b)| (b - a) as usize).sum()
 }
 
 #[test]
@@ -23,7 +19,7 @@ fn components_sharing_a_cell_give_one_record() {
         poly(&[(5.0, 4.0), (6.0, 4.0), (6.0, 5.0), (5.0, 4.0)], &[]),
         poly(&[(5.0, 4.0), (6.0, 5.0), (5.0, 5.0), (5.0, 4.0)], &[]),
     ]);
-    let r = Burner::new(Mode::Coverage).burn(&g, [(GeomId(0), &mp)]).expect("burn");
+    let r = burn_spans(Rule::Fraction, &g, [(GeomId(0), &mp)]).expect("burn");
     assert!(one_record_per_cell(&r));
     assert!((covered_area(&r, &g) - 1.0).abs() < 1e-9);
 }
@@ -41,10 +37,9 @@ fn components_on_both_sides_of_a_window() {
         poly(&[(0.5, 1.5), (3.5, 1.5), (3.5, 3.5), (0.5, 3.5), (0.5, 1.5)], &[]),
         poly(&[(6.5, 5.5), (9.5, 5.5), (9.5, 7.5), (6.5, 7.5), (6.5, 5.5)], &[]),
     ]);
-    let r = Burner::new(Mode::Coverage).burn(&w, [(GeomId(0), &mp)]).expect("burn");
+    let r = burn_spans(Rule::Fraction, &w, [(GeomId(0), &mp)]).expect("burn");
     assert!(one_record_per_cell(&r));
-    assert!(r.runs.iter().all(|x| x.cols.start().0 >= 3 && x.cols.end().0 <= 7));
-    assert!(r.edges.iter().all(|e| (3..7).contains(&e.col.0)));
+    assert!(r.col_start.iter().zip(&r.col_end).all(|(&a, &b)| a >= 3 && b <= 7));
     // In the window: 0.5 col-width of the left part and 0.5 of the right part, 2 rows each.
     assert!((covered_area(&r, &g) - 2.0).abs() < 1e-9);
 }
@@ -59,7 +54,7 @@ fn hole_spanning_two_components_cells() {
         ),
         poly(&[(5.0, 1.0), (9.0, 1.0), (9.0, 5.0), (5.0, 5.0), (5.0, 1.0)], &[]),
     ]);
-    let r = Burner::new(Mode::Coverage).burn(&g, [(GeomId(0), &mp)]).expect("burn");
+    let r = burn_spans(Rule::Fraction, &g, [(GeomId(0), &mp)]).expect("burn");
     assert!(one_record_per_cell(&r));
     assert!((covered_area(&r, &g) - (16.0 - 4.0 + 16.0)).abs() < 1e-9);
 }
@@ -71,7 +66,7 @@ fn approx_adjacent_components_give_one_record_per_cell() {
         poly(&[(1.0, 1.0), (5.0, 1.0), (5.0, 5.0), (1.0, 5.0), (1.0, 1.0)], &[]),
         poly(&[(5.0, 1.0), (9.0, 1.0), (9.0, 5.0), (5.0, 5.0), (5.0, 1.0)], &[]),
     ]);
-    let r = Burner::new(Mode::Approx).burn(&g, [(GeomId(0), &mp)]).expect("burn");
+    let r = burn_spans(Rule::Centre, &g, [(GeomId(0), &mp)]).expect("burn");
     assert!(one_record_per_cell(&r));
     assert!((covered_area(&r, &g) - 32.0).abs() < 1e-9);
 }

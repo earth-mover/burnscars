@@ -53,6 +53,16 @@ pub enum BurnError {
     WalkDiverged { at: At, coords: usize },
     #[error("geometry {id}: x extent {width} is wider than the lattice period {period}")]
     WiderThanPeriod { id: GeomId, width: f64, period: f64 },
+    #[error("geometry {id}: a polygon; use `Burner::burn_polygons`")]
+    Polygonal { id: GeomId },
+    #[error("geometry {id}: a line or a point; use `Burner::burn_into`")]
+    NotPolygonal { id: GeomId },
+    #[error("geometry {id}: ids must strictly increase; the previous id is {previous}")]
+    IdOrder { id: GeomId, previous: GeomId },
+    #[error("geometry {id}: more than i32::MAX stretch values")]
+    TooManyValues { id: GeomId },
+    #[error("the stretch table holds the value form of another rule")]
+    RuleMismatch,
     #[error("geometry {id}: internal error: {detail}")]
     Internal { id: GeomId, detail: &'static str },
 }

@@ -3,8 +3,8 @@
 
 mod common;
 
-use burnscars::{Burner, GeomId, Grid, Mode};
-use common::{covered_area, hex, known_diffs, read_csv};
+use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Origin, Rule, Stretches};
+use common::{covered_area, edge_cells, hex, known_diffs, read_csv};
 
 const GEOMS: &str = include_str!("../fixtures/geometries.csv");
 const EXPECTED: &str = include_str!("../fixtures/expected.csv");
@@ -45,13 +45,20 @@ fn parity_with_controlledburn_fixtures() {
         .expect("grid");
         let bytes = hex(&g[col(gh, "wkb_hex")]);
         let geom = wkb::reader::read_wkb(&bytes).expect("wkb");
-        let r = Burner::new(Mode::Coverage).burn(&grid, [(GeomId(0), &geom)]).expect("burn");
+        let mut b = Burner::new(Rule::Fraction);
+        let mut spans = Stretches::new(Rule::Fraction);
+        let r = match b.burn_polygons(&grid, [(GeomId(0), &geom)], Origin::Grid, &mut spans) {
+            Err(BurnError::NotPolygonal { .. }) => {
+                b.burn(&grid, [(GeomId(0), &geom)]).expect("burn")
+            }
+            r => r.map(|()| BurnResult::default()).expect("burn"),
+        };
         let tol = num(&e[col(eh, "tol_rel")]).unwrap_or(1e-9);
         if let Some(a) = num(&e[col(eh, "covered_area")]) {
-            assert!((covered_area(&r, &grid) - a).abs() <= tol * a.max(1.0), "{case}: area");
+            assert!((covered_area(&spans, &grid) - a).abs() <= tol * a.max(1.0), "{case}: area");
         }
         if num(&e[col(eh, "edges_empty")]) == Some(1.0) {
-            assert!(r.edges.is_empty(), "{case}: edges");
+            assert!(edge_cells(&spans).is_empty(), "{case}: edges");
         }
         if let Some(l) = num(&e[col(eh, "line_length")]) {
             let got: f64 = r.lines.iter().map(|x| f64::from(x.length)).sum();

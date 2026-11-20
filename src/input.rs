@@ -15,6 +15,7 @@ use geo_traits::{
 use crate::error::{At, BurnError, GeomKind};
 use crate::geom::{coord::Coord, measures::signed_area_ccw};
 use crate::grid::GeomId;
+use crate::scratch::vec_bytes;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RingRole {
@@ -86,6 +87,11 @@ pub(crate) struct InputBuf {
 }
 
 impl InputBuf {
+    pub(crate) fn bytes(&self) -> usize {
+        let Self { coords, rings, lines, points } = self;
+        vec_bytes(coords) + vec_bytes(rings) + vec_bytes(lines) + vec_bytes(points)
+    }
+
     pub(crate) fn rings(&self) -> impl Iterator<Item = NormRing<'_>> {
         self.rings.iter().filter_map(|m| {
             Some(NormRing {

@@ -4,16 +4,11 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
 use burnscars::{
-    BurnError, BurnResult, Burner, Col, GeomId, Grid, Lattice, Mode, Pos, Row, Span, XAxis, YAxis,
-    YOrigin,
+    BurnError, Col, GeomId, Grid, Lattice, Pos, Row, Rule, Span, Stretches, XAxis, YAxis, YOrigin,
 };
-use common::{expanded, ls, poly};
+use common::{Expanded, burn_mixed, burn_spans, ls, poly};
 use geo_types::{Geometry, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Rect};
-
-type Expanded = BTreeMap<(u8, u32, u32, u32), Vec<u32>>;
 
 fn span<T: Copy + Ord + Into<u32>>(a: T, b: T) -> Span<T> {
     Span::new(a, b).expect("span")
@@ -26,14 +21,23 @@ fn window(l: Lattice, nrow: u32, ncol: u32, rows: (u32, u32), cols: (u32, u32)) 
         .expect("grid")
 }
 
-#[expect(clippy::cast_possible_truncation, reason = "test indices")]
-fn burn(mode: Mode, g: &Grid, geoms: &[Geometry<f64>]) -> BurnResult {
-    let items = geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x));
-    Burner::new(mode).burn(g, items).expect("burn")
+fn burn(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Expanded {
+    burn_mixed(rule, g, geoms).expect("burn")
 }
 
-fn runs(r: &BurnResult) -> Vec<(u32, std::ops::Range<u32>)> {
-    r.runs.iter().map(|x| (x.row.0, x.cols.range())).collect()
+#[expect(clippy::cast_possible_truncation, reason = "test indices")]
+fn spans(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Stretches {
+    burn_spans(rule, g, geoms.iter().enumerate().map(|(i, x)| (GeomId(i as u32), x))).expect("burn")
+}
+
+/// `(row, cols)` of every stretch, in fiber order.
+fn runs(s: &Stretches) -> Vec<(u32, std::ops::Range<u32>)> {
+    (0..s.id.len())
+        .flat_map(|f| {
+            (s.fiber_ptr[f]..s.fiber_ptr[f + 1])
+                .map(move |k| (s.row[f], s.col_start[k]..s.col_end[k]))
+        })
+        .collect()
 }
 
 /// One cell per key, with the value as an f32.
@@ -57,8 +61,8 @@ fn zone() -> Geometry<f64> {
 fn the_brick_burns_in_its_own_indices() {
     let l = lonlat(165.0);
     let g = window(l, 3, 4, (0, 3), (0, 4));
-    assert_eq!(runs(&burn(Mode::Approx, &g, &[zone()])), [(2, 2..3), (1, 2..3)]);
-    let cov = cells(&expanded(&burn(Mode::Coverage, &g, &[zone()])));
+    assert_eq!(runs(&spans(Rule::Centre, &g, &[zone()])), [(1, 2..3), (2, 2..3)]);
+    let cov = cells(&burn(Rule::Fraction, &g, &[zone()]));
     assert_eq!(cov, [((0, 1, 2), 1.0), ((0, 2, 2), 1.0)]);
 }
 
@@ -67,11 +71,11 @@ fn the_brick_burns_in_its_own_indices() {
 fn a_window_of_the_global_lattice_gives_global_indices() {
     let l = lonlat(-5.0);
     let across = window(l, 3, 36, (0, 3), (17, 21));
-    assert_eq!(runs(&burn(Mode::Approx, &across, &[zone()])), [(2, 19..20), (1, 19..20)]);
+    assert_eq!(runs(&spans(Rule::Centre, &across, &[zone()])), [(1, 19..20), (2, 19..20)]);
     let east = window(l, 3, 36, (0, 3), (19, 23));
-    assert_eq!(runs(&burn(Mode::Approx, &east, &[zone()])), [(2, 19..20), (1, 19..20)]);
+    assert_eq!(runs(&spans(Rule::Centre, &east, &[zone()])), [(1, 19..20), (2, 19..20)]);
     let west = window(l, 3, 36, (0, 3), (10, 19));
-    assert!(burn(Mode::Approx, &west, &[zone()]).is_empty());
+    assert!(spans(Rule::Centre, &west, &[zone()]).is_empty());
 }
 
 /// A zone split at 180 (two parts) fills the cell that the seam cuts: 0.5 from each part.
@@ -86,15 +90,15 @@ fn a_zone_split_at_the_seam_fills_the_cell_across_it() {
             &[],
         ),
     ]));
-    let cov = cells(&expanded(&burn(Mode::Coverage, &g, std::slice::from_ref(&split))));
+    let cov = cells(&burn(Rule::Fraction, &g, std::slice::from_ref(&split)));
     assert_eq!(cov, [((0, 1, 18), 1.0), ((0, 2, 18), 1.0)]);
-    assert_eq!(runs(&burn(Mode::Approx, &g, &[split])), [(2, 18..19), (1, 18..19)]);
+    assert_eq!(runs(&spans(Rule::Centre, &g, &[split])), [(1, 18..19), (2, 18..19)]);
 
     let line = Geometry::MultiLineString(MultiLineString::new(vec![
         ls(&[(176.0, 20.0), (180.0, 20.0)]),
         ls(&[(-180.0, 20.0), (-176.0, 20.0)]),
     ]));
-    assert_eq!(cells(&expanded(&burn(Mode::Coverage, &g, &[line]))), [((1, 1, 18), 8.0)]);
+    assert_eq!(cells(&burn(Rule::Fraction, &g, &[line])), [((1, 1, 18), 8.0)]);
 }
 
 /// A zone in 0..360 on a [-180, 180) lattice: its copy one period west fills column 0.
@@ -103,10 +107,10 @@ fn a_zone_past_180_burns_on_a_lattice_from_minus_180() {
     let l = lonlat(-185.0);
     let g = window(l, 3, 36, (0, 3), (0, 36));
     let z: Geometry<f64> = Rect::new((175.0, 15.0), (185.0, 35.0)).into();
-    let cov = cells(&expanded(&burn(Mode::Coverage, &g, &[z])));
+    let cov = cells(&burn(Rule::Fraction, &g, &[z]));
     assert_eq!(cov, [((0, 1, 0), 1.0), ((0, 2, 0), 1.0)]);
     let line = Geometry::LineString(ls(&[(176.0, 20.0), (184.0, 20.0)]));
-    assert_eq!(cells(&expanded(&burn(Mode::Coverage, &g, &[line]))), [((1, 1, 0), 8.0)]);
+    assert_eq!(cells(&burn(Rule::Fraction, &g, &[line])), [((1, 1, 0), 8.0)]);
 }
 
 /// On a lattice of exactly one period, the far x edge is the seam: a point on it goes
@@ -117,7 +121,7 @@ fn a_point_on_the_seam_is_in_one_cell() {
     let g = window(l, 3, 36, (0, 3), (0, 36));
     let pts = |x: f64| Geometry::MultiPoint(MultiPoint::new(vec![Point::new(x, 20.0)]));
     for (x, col) in [(0.0, 0), (360.0, 0), (-360.0, 0), (-180.0, 18), (185.0, 18), (-5.0, 35)] {
-        let got = cells(&expanded(&burn(Mode::Coverage, &g, &[pts(x)])));
+        let got = cells(&burn(Rule::Fraction, &g, &[pts(x)]));
         assert_eq!(got, [((2, 1, col), 0.0)], "x = {x}");
     }
 }
@@ -144,14 +148,14 @@ fn a_window_east_of_180_matches_a_shifted_lattice() {
             Point::new(-133.3, 1.0),
         ])),
     ];
-    for mode in [Mode::Coverage, Mode::Approx] {
-        let shifted: Expanded = expanded(&burn(mode, &a, &geoms))
+    for rule in [Rule::Fraction, Rule::Touched, Rule::Centre] {
+        let shifted: Expanded = burn(rule, &a, &geoms)
             .into_iter()
             .map(|((t, id, r, c), v)| ((t, id, r, c - 18), v))
             .collect();
-        let want = expanded(&burn(mode, &b, &geoms));
+        let want = burn(rule, &b, &geoms);
         assert!(!want.is_empty());
-        assert_eq!(shifted, want, "{mode:?}");
+        assert_eq!(shifted, want, "{rule:?}");
     }
 }
 
@@ -160,11 +164,11 @@ fn a_geometry_wider_than_the_period_is_refused() {
     let l = lonlat(0.0);
     let g = window(l, 3, 36, (0, 3), (0, 36));
     let wide: Geometry<f64> = Rect::new((-180.0, 15.0), (181.0, 35.0)).into();
-    let e = Burner::new(Mode::Coverage).burn(&g, [(GeomId(4), &wide)]).expect_err("too wide");
+    let e = burn_spans(Rule::Fraction, &g, [(GeomId(4), &wide)]).expect_err("too wide");
     assert!(matches!(e, BurnError::WiderThanPeriod { id: GeomId(4), .. }), "{e}");
     let world: Geometry<f64> = Rect::new((-180.0, 15.0), (180.0, 35.0)).into();
-    let out = burn(Mode::Approx, &g, &[world]);
-    assert_eq!(runs(&out), [(2, 0..36), (1, 0..36)]);
+    let out = spans(Rule::Centre, &g, &[world]);
+    assert_eq!(runs(&out), [(1, 0..36), (2, 0..36)]);
 }
 
 /// `col_of` and `row_of` answer in the caller's indices.
@@ -185,18 +189,18 @@ fn col_of_and_row_of_use_the_callers_indices() {
 #[test]
 fn a_point_on_the_seam_is_in_one_tile() {
     let pts = Geometry::MultiPoint(MultiPoint::new(vec![Point::new(360.0, 20.0)]));
-    let full = cells(&expanded(&burn(
-        Mode::Coverage,
+    let full = cells(&burn(
+        Rule::Fraction,
         &window(lonlat(0.0), 3, 36, (0, 3), (0, 36)),
         std::slice::from_ref(&pts),
-    )));
+    ));
     assert_eq!(full, [((2, 1, 0), 0.0)]);
     let west = burn(
-        Mode::Coverage,
+        Rule::Fraction,
         &window(lonlat(0.0), 3, 36, (0, 3), (0, 1)),
         std::slice::from_ref(&pts),
     );
-    let east = burn(Mode::Coverage, &window(lonlat(0.0), 3, 36, (0, 3), (35, 36)), &[pts]);
-    assert_eq!(cells(&expanded(&west)), full);
+    let east = burn(Rule::Fraction, &window(lonlat(0.0), 3, 36, (0, 3), (35, 36)), &[pts]);
+    assert_eq!(cells(&west), full);
     assert!(east.is_empty(), "{east:?}");
 }
