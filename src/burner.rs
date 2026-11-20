@@ -559,8 +559,8 @@ mod tests {
         Ok(())
     }
 
-    /// One copy on a south-up grid: rows strictly descend, so the encoder walks them in reverse
-    /// and does not sort.
+    /// One copy on a south-up grid: the row groups descend.
+    /// The encoder walks them in reverse and does not sort.
     #[test]
     fn descending_rows_are_walked_in_reverse_with_no_sort() -> TestResult {
         let recs = [run(3, 0..2), edge(3, 4, 0.5), edge(2, 1, 0.25), run(2, 2..5), run(1, 7..9)];

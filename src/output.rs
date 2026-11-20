@@ -249,10 +249,8 @@ impl PolyRecs {
             // One copy on a south-up grid: the sweep order with the rows flipped.
             self.recs.chunk_by(same_row).rev().try_for_each(&mut fiber)
         } else {
-            // Two or more copies. The weight bits make the order total, so the sums do not
-            // depend on the burn order of the copies.
-            // With 3 or more copies, a cell's edges add in ascending weight order; this can differ
-            // by an ulp from the burn order.
+            // Two or more copies. The sort key is total, so the result is deterministic.
+            // With 3 or more copies, a cell's edges add in ascending weight order, which can differ by an ulp from burn order.
             self.recs.sort_unstable_by_key(|r| (r.row, r.start, r.is_edge(), r.weight.to_bits()));
             self.recs.chunk_by(same_row).try_for_each(&mut fiber)
         };
