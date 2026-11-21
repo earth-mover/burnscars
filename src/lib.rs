@@ -62,5 +62,5 @@ pub use error::{At, BurnError, GeomKind};
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span, XAxis, YAxis, YOrigin};
 pub use output::{
     BurnResult, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor, RowMajorError,
-    StretchValues, Stretches,
+    StretchCounts, StretchValues, Stretches,
 };
