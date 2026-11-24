@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Origin, Rule, Stretches};
+use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Origin, Rule, Stretches, Weight};
 use geo_traits::GeometryTrait;
 use geo_types::{Geometry, LineString, Polygon, coord};
 
@@ -41,7 +41,11 @@ pub(crate) fn densify(s: &Stretches) -> BTreeMap<(u32, u32, u32), f32> {
     let mut m = BTreeMap::new();
     for st in s.iter() {
         for (i, c) in st.cols.range().enumerate() {
-            let w = st.weight.map_or(1.0, |ws| if ws.len() == 1 { ws[0] } else { ws[i] });
+            let w = match st.weight {
+                Weight::Pattern => 1.0,
+                Weight::Run(w) => w,
+                Weight::Block(ws) => ws[i],
+            };
             if m.insert((st.id.0, st.row.0, c), w).is_some() {
                 panic!("cell {:?} twice", (st.id.0, st.row.0, c));
             }

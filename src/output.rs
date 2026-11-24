@@ -49,11 +49,21 @@ pub struct StretchValues {
 /// One stretch of a [`Stretches`]: geometry `id` covers `cols` of `row`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StretchRef<'a> {
-    pub id: GeomId,
+    pub id: GeomId, // Remmeber GeomId is a newtype around u32
     pub row: Row,
     pub cols: Span<Col>,
-    /// One weight (a run) or one weight per cell (a block). `None` in a pattern.
-    pub weight: Option<&'a [f32]>,
+    pub weight: Weight<'a>,
+}
+
+/// The weight of one stretch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Weight<'a> {
+    /// A table with no values: every cell counts as 1.
+    Pattern,
+    /// One value for every cell. A one-cell stretch is a run.
+    Run(f32),
+    /// One value per cell.
+    Block(&'a [f32]),
 }
 
 /// The capacity to reserve in a [`Stretches`].
@@ -134,7 +144,11 @@ impl Stretches {
                 id: GeomId(id),
                 row: Row(row),
                 cols: Span::from_parts(Col(self.col_start[s]), Col(self.col_end[s])),
-                weight: self.values.as_ref().map(|v| &v.weight[at(v, s)..at(v, s + 1)]),
+                weight: match self.values.as_ref().map(|v| &v.weight[at(v, s)..at(v, s + 1)]) {
+                    None => Weight::Pattern,
+                    Some(&[w]) => Weight::Run(w),
+                    Some(ws) => Weight::Block(ws),
+                },
             })
         })
     }
@@ -177,7 +191,11 @@ impl Stretches {
         let mut m = std::collections::BTreeMap::new();
         for st in self.iter() {
             for (i, c) in st.cols.range().enumerate() {
-                let w = st.weight.map_or(1.0, |ws| if ws.len() == 1 { ws[0] } else { ws[i] });
+                let w = match st.weight {
+                    Weight::Pattern => 1.0,
+                    Weight::Run(w) => w,
+                    Weight::Block(ws) => ws[i],
+                };
                 if m.insert((st.id.0, st.row.0, c), w).is_some() {
                     panic!("cell {:?} twice", (st.id.0, st.row.0, c));
                 }

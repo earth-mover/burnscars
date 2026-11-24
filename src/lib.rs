@@ -29,7 +29,7 @@
 //! # Example
 //!
 //! ```
-//! use burnscars::{Burner, GeomId, Grid, Origin, Rule, Stretches};
+//! use burnscars::{Burner, GeomId, Grid, Origin, Rule, Stretches, Weight};
 //! use geo_types::polygon;
 //!
 //! // A 4 x 4 grid over [0, 4] x [0, 4], and a square that covers 2 x 2 cells.
@@ -43,7 +43,7 @@
 //! assert_eq!(out.values.as_ref().map(|v| v.weight.as_slice()), Some(&[1.0, 1.0][..]));
 //! // The same table, one stretch at a time.
 //! let rows: Vec<_> = out.iter().map(|s| (s.row.0, s.cols.range(), s.weight)).collect();
-//! assert_eq!(rows, [(1, 1..3, Some(&[1.0][..])), (2, 1..3, Some(&[1.0][..]))]);
+//! assert_eq!(rows, [(1, 1..3, Weight::Run(1.0)), (2, 1..3, Weight::Run(1.0))]);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
@@ -65,5 +65,5 @@ pub use error::{At, BurnError, GeomKind};
 pub use grid::{Col, GeomId, Grid, GridError, Lattice, Pos, Row, Span, XAxis, YAxis, YOrigin};
 pub use output::{
     BurnResult, GeomIndex, LineRef, Lines, PointRef, Points, RowMajor, RowMajorError,
-    StretchCounts, StretchRef, StretchValues, Stretches,
+    StretchCounts, StretchRef, StretchValues, Stretches, Weight,
 };
