@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use burnscars::{BurnError, BurnResult, Burner, GeomId, Grid, Origin, Rule, Stretches};
+use burnscars::{BurnError, BurnResult, Burner, Col, GeomId, Grid, Origin, Rule, Stretches};
 use geo_traits::GeometryTrait;
 use geo_types::{Geometry, LineString, Polygon, coord};
 
@@ -39,17 +39,10 @@ where
 #[expect(clippy::panic, reason = "test helper: a cell twice is a test failure")]
 pub(crate) fn densify(s: &Stretches) -> BTreeMap<(u32, u32, u32), f32> {
     let mut m = BTreeMap::new();
-    for (f, (&id, &row)) in s.id.iter().zip(&s.row).enumerate() {
-        for st in s.fiber_ptr[f]..s.fiber_ptr[f + 1] {
-            let ws = s
-                .values
-                .as_ref()
-                .map(|v| &v.weight[offset(v.value_ptr[st])..offset(v.value_ptr[st + 1])]);
-            for (i, c) in (s.col_start[st]..s.col_end[st]).enumerate() {
-                let w = ws.map_or(1.0, |ws| if ws.len() == 1 { ws[0] } else { ws[i] });
-                if m.insert((id, row, c), w).is_some() {
-                    panic!("cell {:?} twice", (id, row, c));
-                }
+    for st in s.iter() {
+        for (Col(c), w) in st.values() {
+            if m.insert((st.id.0, st.row.0, c), w).is_some() {
+                panic!("cell {:?} twice", (st.id.0, st.row.0, c));
             }
         }
     }

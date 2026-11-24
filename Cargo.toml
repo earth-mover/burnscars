@@ -1,6 +1,6 @@
 [package]
 name = "burnscars"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
@@ -33,10 +33,12 @@ unused_qualifications = "warn"
 # Safety & correctness
 exit = "warn"
 expect_used = "warn"
+missing_panics_doc = "warn"
 panic = "warn"
 todo = "warn"
 undocumented_unsafe_blocks = "warn"
 unimplemented = "warn"
+unreachable = "warn"
 unwrap_used = "warn"
 # Clarity & style
 allow_attributes = "warn"

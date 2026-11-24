@@ -40,7 +40,8 @@ impl fmt::Display for GeomId {
     }
 }
 
-/// Non-empty half-open index range. `start < end` by construction.
+/// _Non-empty_ half-open index range. `start < end` by construction.
+/// Guaranteed non-empty bounds unlike Range
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span<T> {
     start: T,

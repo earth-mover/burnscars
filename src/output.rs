@@ -46,6 +46,40 @@ pub struct StretchValues {
     pub weight: Vec<f32>,
 }
 
+/// One stretch of a [`Stretches`]: geometry `id` covers `cols` of `row`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StretchRef<'a> {
+    pub id: GeomId, // Remmeber GeomId is a newtype around u32
+    pub row: Row,
+    pub cols: Span<Col>,
+    pub weight: Weight<'a>,
+}
+
+impl StretchRef<'_> {
+    /// Each cell of the stretch with its weight, 1 in a pattern.
+    pub fn values(&self) -> impl Iterator<Item = (Col, f32)> + '_ {
+        self.cols.range().enumerate().map(|(i, c)| {
+            let w = match self.weight {
+                Weight::Pattern => 1.0,
+                Weight::Run(w) => w,
+                Weight::Block(ws) => ws[i],
+            };
+            (Col(c), w)
+        })
+    }
+}
+
+/// The weight of one stretch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Weight<'a> {
+    /// A table with no values: every cell counts as 1.
+    Pattern,
+    /// One value for every cell. A one-cell stretch is a run.
+    Run(f32),
+    /// One value per cell.
+    Block(&'a [f32]),
+}
+
 /// The capacity to reserve in a [`Stretches`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StretchCounts {
@@ -112,6 +146,27 @@ impl Stretches {
         self.col_start.is_empty()
     }
 
+    /// Every stretch in fiber order, so sorted by `(id, row, column)`.
+    pub fn iter(&self) -> impl Iterator<Item = StretchRef<'_>> + '_ {
+        #[expect(clippy::expect_used)]
+        fn at(v: &StretchValues, s: usize) -> usize {
+            usize::try_from(v.value_ptr[s]).expect("invariant: a value offset is not negative")
+        }
+        let fibers = self.fiber_ptr.windows(2).zip(self.id.iter().zip(&self.row));
+        fibers.flat_map(move |(ptr, (&id, &row))| {
+            (ptr[0]..ptr[1]).map(move |s| StretchRef {
+                id: GeomId(id),
+                row: Row(row),
+                cols: Span::from_parts(Col(self.col_start[s]), Col(self.col_end[s])),
+                weight: match self.values.as_ref().map(|v| &v.weight[at(v, s)..at(v, s + 1)]) {
+                    None => Weight::Pattern,
+                    Some(&[w]) => Weight::Run(w),
+                    Some(ws) => Weight::Block(ws),
+                },
+            })
+        })
+    }
+
     pub(crate) fn mark(&self) -> StretchesMark {
         StretchesMark {
             fibers: self.id.len(),
@@ -148,20 +203,10 @@ impl Stretches {
     #[cfg(test)]
     pub(crate) fn densify(&self) -> std::collections::BTreeMap<(u32, u32, u32), f32> {
         let mut m = std::collections::BTreeMap::new();
-        for f in 0..self.id.len() {
-            for s in self.fiber_ptr[f]..self.fiber_ptr[f + 1] {
-                let cols = self.col_start[s]..self.col_end[s];
-                let w = |i: usize| {
-                    self.values.as_ref().map_or(1.0, |v| {
-                        let at = |k: usize| usize::try_from(v.value_ptr[k]).expect("offset >= 0");
-                        let vs = &v.weight[at(s)..at(s + 1)];
-                        if vs.len() == 1 { vs[0] } else { vs[i] }
-                    })
-                };
-                for (i, c) in cols.enumerate() {
-                    if m.insert((self.id[f], self.row[f], c), w(i)).is_some() {
-                        panic!("cell {:?} twice", (self.id[f], self.row[f], c));
-                    }
+        for st in self.iter() {
+            for (Col(c), w) in st.values() {
+                if m.insert((st.id.0, st.row.0, c), w).is_some() {
+                    panic!("cell {:?} twice", (st.id.0, st.row.0, c));
                 }
             }
         }
