@@ -55,6 +55,20 @@ pub struct StretchRef<'a> {
     pub weight: Weight<'a>,
 }
 
+impl StretchRef<'_> {
+    /// Each cell of the stretch with its weight, 1 in a pattern.
+    pub fn values(&self) -> impl Iterator<Item = (Col, f32)> + '_ {
+        self.cols.range().enumerate().map(|(i, c)| {
+            let w = match self.weight {
+                Weight::Pattern => 1.0,
+                Weight::Run(w) => w,
+                Weight::Block(ws) => ws[i],
+            };
+            (Col(c), w)
+        })
+    }
+}
+
 /// The weight of one stretch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Weight<'a> {
@@ -190,12 +204,7 @@ impl Stretches {
     pub(crate) fn densify(&self) -> std::collections::BTreeMap<(u32, u32, u32), f32> {
         let mut m = std::collections::BTreeMap::new();
         for st in self.iter() {
-            for (i, c) in st.cols.range().enumerate() {
-                let w = match st.weight {
-                    Weight::Pattern => 1.0,
-                    Weight::Run(w) => w,
-                    Weight::Block(ws) => ws[i],
-                };
+            for (Col(c), w) in st.values() {
                 if m.insert((st.id.0, st.row.0, c), w).is_some() {
                     panic!("cell {:?} twice", (st.id.0, st.row.0, c));
                 }
