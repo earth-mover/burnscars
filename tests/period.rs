@@ -32,12 +32,7 @@ fn spans(rule: Rule, g: &Grid, geoms: &[Geometry<f64>]) -> Stretches {
 
 /// `(row, cols)` of every stretch, in fiber order.
 fn runs(s: &Stretches) -> Vec<(u32, std::ops::Range<u32>)> {
-    (0..s.id.len())
-        .flat_map(|f| {
-            (s.fiber_ptr[f]..s.fiber_ptr[f + 1])
-                .map(move |k| (s.row[f], s.col_start[k]..s.col_end[k]))
-        })
-        .collect()
+    s.iter().map(|st| (st.row.0, st.cols.range())).collect()
 }
 
 /// One cell per key, with the value as an f32.

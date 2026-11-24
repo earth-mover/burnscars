@@ -46,6 +46,16 @@ pub struct StretchValues {
     pub weight: Vec<f32>,
 }
 
+/// One stretch of a [`Stretches`]: geometry `id` covers `cols` of `row`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StretchRef<'a> {
+    pub id: GeomId,
+    pub row: Row,
+    pub cols: Span<Col>,
+    /// One weight (a run) or one weight per cell (a block). `None` in a pattern.
+    pub weight: Option<&'a [f32]>,
+}
+
 /// The capacity to reserve in a [`Stretches`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StretchCounts {
@@ -112,6 +122,23 @@ impl Stretches {
         self.col_start.is_empty()
     }
 
+    /// Every stretch in fiber order, so sorted by `(id, row, column)`.
+    pub fn iter(&self) -> impl Iterator<Item = StretchRef<'_>> + '_ {
+        #[expect(clippy::expect_used)]
+        fn at(v: &StretchValues, s: usize) -> usize {
+            usize::try_from(v.value_ptr[s]).expect("invariant: a value offset is not negative")
+        }
+        let fibers = self.fiber_ptr.windows(2).zip(self.id.iter().zip(&self.row));
+        fibers.flat_map(move |(ptr, (&id, &row))| {
+            (ptr[0]..ptr[1]).map(move |s| StretchRef {
+                id: GeomId(id),
+                row: Row(row),
+                cols: Span::from_parts(Col(self.col_start[s]), Col(self.col_end[s])),
+                weight: self.values.as_ref().map(|v| &v.weight[at(v, s)..at(v, s + 1)]),
+            })
+        })
+    }
+
     pub(crate) fn mark(&self) -> StretchesMark {
         StretchesMark {
             fibers: self.id.len(),
@@ -148,20 +175,11 @@ impl Stretches {
     #[cfg(test)]
     pub(crate) fn densify(&self) -> std::collections::BTreeMap<(u32, u32, u32), f32> {
         let mut m = std::collections::BTreeMap::new();
-        for f in 0..self.id.len() {
-            for s in self.fiber_ptr[f]..self.fiber_ptr[f + 1] {
-                let cols = self.col_start[s]..self.col_end[s];
-                let w = |i: usize| {
-                    self.values.as_ref().map_or(1.0, |v| {
-                        let at = |k: usize| usize::try_from(v.value_ptr[k]).expect("offset >= 0");
-                        let vs = &v.weight[at(s)..at(s + 1)];
-                        if vs.len() == 1 { vs[0] } else { vs[i] }
-                    })
-                };
-                for (i, c) in cols.enumerate() {
-                    if m.insert((self.id[f], self.row[f], c), w(i)).is_some() {
-                        panic!("cell {:?} twice", (self.id[f], self.row[f], c));
-                    }
+        for st in self.iter() {
+            for (i, c) in st.cols.range().enumerate() {
+                let w = st.weight.map_or(1.0, |ws| if ws.len() == 1 { ws[0] } else { ws[i] });
+                if m.insert((st.id.0, st.row.0, c), w).is_some() {
+                    panic!("cell {:?} twice", (st.id.0, st.row.0, c));
                 }
             }
         }
